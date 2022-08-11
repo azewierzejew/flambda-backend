@@ -89,9 +89,39 @@ let dump ppf t ~msg =
   in
   List.iter print_block t.layout
 
-let print_dot ?(show_instr = true) ?(show_exn = true) ?annotate_block
-    ?annotate_succ ppf t =
+let print_dot ?(show_instr = true) ?(show_exn = true) ?annotate_instr
+    ?annotate_block ?annotate_block_end ?annotate_succ ppf t =
   Format.fprintf ppf "strict digraph \"%s\" {\n" t.cfg.fun_name;
+  let col_count = 2 in
+  let col_count =
+    match annotate_instr with None -> col_count | Some _ -> col_count + 1
+  in
+  let escape s =
+    let replace c t s = String.split_on_char c s |> String.concat t in
+    let s = replace '&' "&amp;" s in
+    let s = replace '<' "&lt;" s in
+    let s = replace '>' "&gt;" s in
+    let s = replace '\"' "&quot;" s in
+    let s = replace '\n' "<br/>" s in
+    s
+  in
+  let escape_ppf =
+    let { Format.out_string; out_flush; out_newline; out_spaces; out_indent } =
+      Format.pp_get_formatter_out_functions ppf ()
+    in
+    let out_string s p n =
+      let s = String.sub s p n in
+      let s = escape s in
+      out_string s 0 (String.length s)
+    in
+    Format.formatter_of_out_functions
+      { out_string; out_flush; out_newline; out_spaces; out_indent }
+  in
+  let annotate_instr i =
+    match annotate_instr with
+    | None -> ()
+    | Some f -> Format.fprintf ppf "\t<td align=\"left\">%s</td>\n" (f i.Cfg.id)
+  in
   let annotate_block label =
     match annotate_block with
     | None -> ""
@@ -105,8 +135,16 @@ let print_dot ?(show_instr = true) ?(show_exn = true) ?annotate_block
   let print_block_dot label (block : Cfg.basic_block) index =
     let name l = Printf.sprintf "\".L%d\"" l in
     let show_index = Option.value index ~default:(-1) in
-    Format.fprintf ppf "\n%s [shape=box label=\".L%d:I%d:S%d%s%s%s" (name label)
-      label show_index (List.length block.body)
+    Format.fprintf ppf
+      "\n\
+       %s [shape=box label=<\n\
+       <table border=\"0\" cellborder=\"1\" cellspacing=\"0\" align=\"left\">\n\
+       <tr>\n\
+       \t<td colspan=\"%d\">\n\
+       \t\t.L%d:I%d:S%d%s%s%s\n\
+       \t</td>\n\
+       </tr>\n"
+      (name label) col_count label show_index (List.length block.body)
       (if block.stack_offset > 0
       then ":T" ^ string_of_int block.stack_offset
       else "")
@@ -117,16 +155,42 @@ let print_dot ?(show_instr = true) ?(show_exn = true) ?annotate_block
       (* CR-someday gyorsh: Printing instruction using Printlinear doesn't work
          because of special characters like { } that need to be escaped. Should
          use sexp to print or implement a special printer. *)
-      Format.fprintf ppf "\npreds:";
+      Format.fprintf ppf
+        "<tr>\n\t<td colspan=\"%d\" align=\"left\">\n\t\tpreds:" col_count;
       Label.Set.iter (Format.fprintf ppf " %d") block.predecessors;
-      Format.fprintf ppf "\\l";
+      Format.fprintf ppf "\n\t</td>\n</tr>\n";
       List.iter
-        (fun i -> Format.fprintf ppf "%a\\l" Cfg.print_basic i)
+        (fun i ->
+          Format.fprintf ppf "<tr>\n";
+          Format.fprintf ppf "\t<td align=\"right\">%d</td>\n" i.Cfg.id;
+          annotate_instr i;
+          Format.fprintf ppf "\t<td align=\"left\" balign=\"left\">";
+          Cfg.print_basic escape_ppf i;
+          Format.pp_print_flush escape_ppf ();
+          Format.fprintf ppf "</td>\n";
+          Format.fprintf ppf "</tr>\n")
         block.body;
-      Format.fprintf ppf "%a\\l"
-        (Cfg.print_terminator ~sep:"\\l")
-        block.terminator);
-    Format.fprintf ppf "\"]\n";
+      let i = block.Cfg.terminator in
+      Format.fprintf ppf "<tr>\n";
+      Format.fprintf ppf "\t<td align=\"right\">%d</td>\n" i.Cfg.id;
+      annotate_instr i;
+      Format.fprintf ppf "\t<td align=\"left\" balign=\"left\">";
+      Cfg.print_terminator escape_ppf i;
+      Format.pp_print_flush escape_ppf ();
+      Format.fprintf ppf "</td>\n";
+      Format.fprintf ppf "</tr>\n";
+      match annotate_block_end with
+      | None -> ()
+      | Some annotate_block_end ->
+        Format.fprintf ppf
+          "<tr>\n\
+           \t<td></td>\n\
+           \t<td align=\"left\" colspan=\"%d\">\n\
+           \t\t%s\n\
+           \t</td>\n\
+           </tr>"
+          (col_count - 1) (annotate_block_end block));
+    Format.fprintf ppf "</table>\n>]\n";
     Label.Set.iter
       (fun l ->
         Format.fprintf ppf "%s->%s[%s]\n" (name label) (name l)

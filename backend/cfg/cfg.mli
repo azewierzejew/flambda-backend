@@ -125,8 +125,7 @@ val register_predecessors_for_all_blocks : t -> unit
 
 (** Printing *)
 
-val print_terminator :
-  ?sep:string -> Format.formatter -> terminator instruction -> unit
+val print_terminator : Format.formatter -> terminator instruction -> unit
 
 val print_basic : Format.formatter -> basic instruction -> unit
 

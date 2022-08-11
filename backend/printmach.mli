@@ -17,6 +17,7 @@
 
 open Format
 
+val loc: unknown:(formatter -> unit) -> formatter -> Reg.location -> unit
 val reg: formatter -> Reg.t -> unit
 val regs: formatter -> Reg.t array -> unit
 val regset: formatter -> Reg.Set.t -> unit

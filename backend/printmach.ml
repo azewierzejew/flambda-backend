@@ -23,15 +23,9 @@ open Interval
 
 module V = Backend_var
 
-let reg ppf r =
-  if not (Reg.anonymous r) then
-    fprintf ppf "%s" (Reg.name r)
-  else
-    fprintf ppf "%s"
-      (match r.typ with Val -> "V" | Addr -> "A" | Int -> "I" | Float -> "F");
-  fprintf ppf "/%i" r.stamp;
-  begin match r.loc with
-  | Unknown -> ()
+let loc ~unknown ppf  l = 
+  match l with 
+  | Unknown -> unknown ppf
   | Reg r ->
       fprintf ppf "[%s]" (Proc.register_name r)
   | Stack(Local s) ->
@@ -42,7 +36,15 @@ let reg ppf r =
       fprintf ppf "[so%i]" s
   | Stack(Domainstate s) ->
       fprintf ppf "[ds%i]" s
-  end
+
+let reg ppf r =
+  if not (Reg.anonymous r) then
+    fprintf ppf "%s" (Reg.name r)
+  else
+    fprintf ppf "%s"
+      (match r.typ with Val -> "V" | Addr -> "A" | Int -> "I" | Float -> "F");
+  fprintf ppf "/%i" r.stamp;
+  loc ~unknown:(fun _ -> ()) ppf r.loc
 
 let regs ppf v =
   match Array.length v with

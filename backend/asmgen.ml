@@ -364,12 +364,15 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
     let force_linscan = should_use_linscan fd in
       match force_linscan, register_allocator with
       | false, IRC ->
-        let res =
+        let cfg =
           fd
           ++ Profile.record ~accumulate:true "cfgize" cfgize
-          ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
         in
-        (Cfg_regalloc_utils.simplify_cfg res)
+        let cfg_description = Cfg_regalloc_validate.Description.create cfg in
+        cfg
+        ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
+        ++ Cfg_regalloc_validate.verify cfg_description
+        ++ Cfg_regalloc_utils.simplify_cfg
         ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run
       | true, _ | false, Upstream ->
         let res =
