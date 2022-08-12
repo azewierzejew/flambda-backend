@@ -338,6 +338,11 @@ let print_terminator ppf (ti : terminator instruction) =
   then Format.fprintf ppf "%a := " Printmach.regs ti.res;
   dump_terminator' ~args:ti.arg ~sep:"\n" ppf ti.desc
 
+let print_instruction ppf i =
+  match i with
+  | `Basic i -> print_basic ppf i
+  | `Terminator i -> print_terminator ppf i
+
 let can_raise_terminator (i : terminator) =
   match i with
   | Raise _ | Tailcall (Func _) | Call_no_return _ -> true

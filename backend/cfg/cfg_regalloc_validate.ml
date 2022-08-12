@@ -422,20 +422,27 @@ let verify desc cfg =
     |> Result.get_ok
   in
   save_as_dot
-    ~annotate_instr:(fun id ->
-      let res = Cfg_dataflow.Instr.Tbl.find res_instr id in
-      (match res.Domain.error with
-      | None -> ()
-      | Some _ -> Format.fprintf Format.str_formatter "ERROR ");
-      Equation_set.print Format.str_formatter res.Domain.equations;
-      Format.flush_str_formatter ())
-    ~annotate_block_end:(fun block ->
+    ~annotate_instr:
+      [ (fun ppf instr ->
+          let id =
+            match instr with
+            | `Basic instr -> instr.id
+            | `Terminator instr -> instr.id
+          in
+          let res = Cfg_dataflow.Instr.Tbl.find res_instr id in
+          (match res.Domain.error with
+          | None -> ()
+          | Some _ -> Format.fprintf ppf "ERROR ");
+          Equation_set.print ppf res.Domain.equations;
+          ());
+        Cfg.print_instruction ]
+    ~annotate_block_end:(fun ppf block ->
       let res = Label.Tbl.find res_block block.start in
       (match res.Domain.error with
       | None -> ()
-      | Some _ -> Format.fprintf Format.str_formatter "ERROR ");
-      Equation_set.print Format.str_formatter res.Domain.equations;
-      Format.flush_str_formatter ())
+      | Some _ -> Format.fprintf ppf "ERROR ");
+      Equation_set.print ppf res.Domain.equations;
+      ())
     cfg "annot";
   Format.print_flush ();
   let result =
@@ -448,8 +455,8 @@ let verify desc cfg =
     in
     Cfg_dataflow.Instr.Tbl.find res_instr entry_id
   in
-  (match result with
-  | { error = None; _ } -> Printf.printf "Check SUCCESS\n"
+  match result with
+  | { error = None; _ } -> cfg
   | { error =
         Some
           (Terminator
@@ -483,5 +490,5 @@ let verify desc cfg =
           "Additional equations coming from the exception path: [%a]\n"
           Equation_set.print exn_equations)
       exn_equations;
-    Format.print_flush ());
-  cfg
+    Format.print_flush ();
+    exit 1

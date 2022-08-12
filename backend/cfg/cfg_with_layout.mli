@@ -61,9 +61,14 @@ val save_as_dot :
 val print_dot :
   ?show_instr:bool ->
   ?show_exn:bool ->
-  ?annotate_instr:(int -> string) ->
+  ?annotate_instr:
+    (Format.formatter ->
+    [ `Basic of Cfg.basic Cfg.instruction
+    | `Terminator of Cfg.terminator Cfg.instruction ] ->
+    unit)
+    list ->
   ?annotate_block:(Label.t -> string) ->
-  ?annotate_block_end:(Cfg.basic_block -> string) ->
+  ?annotate_block_end:(Format.formatter -> Cfg.basic_block -> unit) ->
   ?annotate_succ:(Label.t -> Label.t -> string) ->
   Format.formatter ->
   t ->
