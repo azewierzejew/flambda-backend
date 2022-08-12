@@ -104,14 +104,21 @@ end
 
 module Register = struct
   type t =
-    { stamp : int;
-      loc : Location.t option
+    { raw_name : Reg.Raw_name.t;
+      stamp : int;
+      loc : Location.t option;
+      typ : Cmm.machtype_component
     }
 
   let create reg =
-    let stamp = reg.Reg.stamp in
-    let loc = Location.of_reg reg in
-    { stamp; loc }
+    { stamp = reg.Reg.stamp;
+      loc = Location.of_reg reg;
+      raw_name = reg.Reg.raw_name;
+      typ = reg.Reg.typ
+    }
+
+  let to_dummy_reg t =
+    { Reg.dummy with raw_name = t.raw_name; typ = t.typ; stamp = t.stamp }
 end
 
 module Instruction = struct
@@ -119,6 +126,13 @@ module Instruction = struct
     { desc : 'a;
       arg : Register.t array;
       res : Register.t array
+    }
+
+  let to_prealloc (type a) ~(alloced : a instruction) (t : a t) : a instruction
+      =
+    { alloced with
+      arg = Array.map Register.to_dummy_reg t.arg;
+      res = Array.map Register.to_dummy_reg t.res
     }
 end
 
@@ -413,7 +427,11 @@ module Domain = struct
   let remove_exn_bucket equations =
     let phys_reg = Proc.loc_exn_bucket in
     let reg =
-      { Register.stamp = phys_reg.stamp; loc = Location.of_reg phys_reg }
+      { Register.stamp = phys_reg.stamp;
+        loc = Location.of_reg phys_reg;
+        raw_name = phys_reg.raw_name;
+        typ = phys_reg.typ
+      }
     in
     Equation_set.remove_result equations ~reg_res:[| reg |]
       ~loc_res:[| Option.get reg.Register.loc |]
@@ -542,7 +560,12 @@ end
 module Check_backwards (Desc_val : Description_value) =
   Cfg_dataflow.Backward (Domain) (Transfer (Desc_val))
 
-let save_as_dot_with_equations ~res_instr ~res_block cfg filename =
+let print_reg_as_loc ppf reg =
+  Printmach.loc ~reg_class:(Proc.register_class reg)
+    ~unknown:(fun ppf -> Format.fprintf ppf "<Unknown>")
+    ppf reg.Reg.loc
+
+let save_as_dot_with_equations ~desc ~res_instr ~res_block cfg filename =
   save_as_dot
     ~annotate_instr:
       [ (fun ppf instr ->
@@ -557,7 +580,19 @@ let save_as_dot_with_equations ~res_instr ~res_block cfg filename =
           | Some _ -> Format.fprintf ppf "ERROR ");
           Equation_set.print ppf res.Domain.equations;
           ());
-        Cfg.print_instruction ]
+        Cfg.print_instruction' ~print_reg:print_reg_as_loc;
+        (fun ppf instr ->
+          match instr with
+          | `Basic instr -> (
+            match Hashtbl.find_opt desc.Description.instructions instr.id with
+            | Some prev_instr ->
+              let instr = Instruction.to_prealloc ~alloced:instr prev_instr in
+              Cfg.print_basic ppf instr
+            | None -> ())
+          | `Terminator ti ->
+            let prev_ti = Hashtbl.find desc.Description.terminators ti.id in
+            let ti = Instruction.to_prealloc ~alloced:ti prev_ti in
+            Cfg.print_terminator ppf ti) ]
     ~annotate_block_end:(fun ppf block ->
       let res = Label.Tbl.find res_block block.start in
       (match res.Domain.error with
@@ -569,7 +604,9 @@ let save_as_dot_with_equations ~res_instr ~res_block cfg filename =
   ()
 
 let verify desc cfg =
-  save_as_dot cfg "after.dot";
+  save_as_dot
+    ~annotate_instr:[Cfg.print_instruction' ~print_reg:print_reg_as_loc]
+    cfg "after.dot";
   Description.verify desc cfg;
   let module Check_backwards = Check_backwards (struct
     let description = desc
@@ -584,7 +621,7 @@ let verify desc cfg =
       ~map:Check_backwards.Block ()
     |> Result.get_ok
   in
-  save_as_dot_with_equations ~res_instr ~res_block cfg "annot.dot";
+  save_as_dot_with_equations ~desc ~res_instr ~res_block cfg "annot.dot";
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
@@ -611,7 +648,7 @@ let verify desc cfg =
           as error);
       _
     } ->
-    let id, desc =
+    let id, instr =
       match error with
       | Basic { loc_instr; _ } ->
         ( loc_instr.id,
@@ -620,7 +657,7 @@ let verify desc cfg =
         ( loc_instr.id,
           fun ppf -> Format.fprintf ppf "%a" Cfg.print_terminator loc_instr )
     in
-    Format.printf "Check failed %d:\n%t:\nMessage: %s\n" id desc message;
+    Format.printf "Check failed %d:\n%t:\nMessage: %s\n" id instr message;
     Format.printf "Equations at moment of error: [%a]\n" Equation_set.print
       equations;
     Option.iter
@@ -646,7 +683,7 @@ let verify desc cfg =
         ~map:Check_backwards.Block ()
       |> Result.get_ok
     in
-    save_as_dot_with_equations ~res_instr ~res_block cfg filename;
+    save_as_dot_with_equations ~desc ~res_instr ~res_block cfg filename;
     Format.printf "Cfg dumped into: %s\n" filename;
     Format.print_flush ();
     exit 1
