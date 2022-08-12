@@ -4,7 +4,6 @@ include Cfg_intf.S
 
 let save_as_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
     ?annotate_block_end ?annotate_succ t filename =
-  let filename = Printf.sprintf "%s.dot" filename in
   if !Cfg.verbose then Printf.printf "Writing cfg to %s\n" filename;
   let oc = open_out filename in
   Misc.try_finally
@@ -16,23 +15,91 @@ let save_as_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
     ~exceptionally:(fun _exn -> Misc.remove_file filename)
 
 module Location = struct
+  module Stack = struct
+    type t =
+      | Local of
+          { index : int;
+            reg_class : int
+          }
+      | Incoming of int
+      | Outgoing of int
+      | Domainstate of int
+
+    let word_size = 8
+
+    let byte_offset_to_word_index offset =
+      (* CR azewierzejew: This seems good enough but maybe we would want to
+         consider unaligned offsets or 32-bit architecture. *)
+      if Sys.word_size <> word_size
+      then
+        Cfg_regalloc_utils.fatal
+          "regalloc validation only supports 64 bit architecture, got word \
+           size %d"
+          Sys.word_size;
+      if offset mod word_size <> 0
+      then
+        Cfg_regalloc_utils.fatal
+          "regalloc validation aligned offsets, got offset %d with remainder %d"
+          offset (offset mod word_size);
+      offset / word_size
+
+    let word_index_to_byte_offset index =
+      (* CR azewierzejew: This seems good enough but maybe we would want to
+         consider unaligned offsets or 32-bit architecture. *)
+      if Sys.word_size <> word_size
+      then
+        Cfg_regalloc_utils.fatal
+          "regalloc validation only supports 64 bit architecture, got word \
+           size %d"
+          Sys.word_size;
+      index * word_size
+
+    let of_stack_loc ~reg_class loc =
+      match loc with
+      | Reg.Local index -> Local { index; reg_class }
+      | Reg.Incoming offset -> Incoming (byte_offset_to_word_index offset)
+      | Reg.Outgoing offset -> Outgoing (byte_offset_to_word_index offset)
+      | Reg.Domainstate offset -> Domainstate (byte_offset_to_word_index offset)
+
+    let to_stack_loc_lossy t =
+      match t with
+      | Local { index; _ } -> Reg.Local index
+      | Incoming index -> Reg.Incoming (word_index_to_byte_offset index)
+      | Outgoing index -> Reg.Outgoing (word_index_to_byte_offset index)
+      | Domainstate index -> Reg.Domainstate (word_index_to_byte_offset index)
+
+    let reg_class_lossy t =
+      match t with
+      | Local { reg_class; _ } -> reg_class
+      | Incoming _ | Outgoing _ | Domainstate _ -> -1
+  end
+
   type t =
     | Reg of int
-    | Stack of Reg.stack_location
+    | Stack of Stack.t
 
-  let of_loc loc =
-    match loc with
+  let of_reg reg =
+    match reg.Reg.loc with
     | Reg.Unknown -> None
     | Reg.Reg idx -> Some (Reg idx)
-    | Reg.Stack stack -> Some (Stack stack)
+    | Reg.Stack stack ->
+      Some
+        (Stack (Stack.of_stack_loc ~reg_class:(Proc.register_class reg) stack))
 
-  let of_loc_exn loc = of_loc loc |> Option.get
+  let of_reg_exn reg = of_reg reg |> Option.get
 
-  let to_loc t =
-    match t with Reg idx -> Reg.Reg idx | Stack stack -> Reg.Stack stack
+  let to_loc_lossy t =
+    match t with
+    | Reg idx -> Reg.Reg idx
+    | Stack stack -> Reg.Stack (Stack.to_stack_loc_lossy stack)
+
+  let reg_class_lossy t =
+    match t with Reg _ -> -1 | Stack stack -> Stack.reg_class_lossy stack
 
   let print ppf t =
-    Printmach.loc ~unknown:(fun _ -> failwith "unreachable") ppf (to_loc t)
+    Printmach.loc ~reg_class:(reg_class_lossy t)
+      ~unknown:(fun _ -> failwith "unreachable")
+      ppf (to_loc_lossy t)
 end
 
 module Register = struct
@@ -43,7 +110,7 @@ module Register = struct
 
   let create reg =
     let stamp = reg.Reg.stamp in
-    let loc = Location.of_loc reg.Reg.loc in
+    let loc = Location.of_reg reg in
     { stamp; loc }
 end
 
@@ -69,7 +136,7 @@ module Description = struct
   let make_terminator_helper t f instr = f false t.terminators instr
 
   let create cfg =
-    save_as_dot cfg "before";
+    save_as_dot cfg "before.dot";
     let add_instr is_reg_alloc_specific instructions instr =
       let id = instr.id in
       if is_reg_alloc_specific
@@ -100,27 +167,27 @@ module Description = struct
     if Array.length reg_arr <> Array.length loc_arr
     then
       Cfg_regalloc_utils.fatal
-        "The instruction's no %d %s count has changed. Now: %d. After: %d." id
+        "The instruction's no. %d %s count has changed. Now: %d. After: %d." id
         name (Array.length loc_arr) (Array.length reg_arr);
     Array.iter2
       (fun reg_desc loc_reg ->
         match reg_desc.Register.loc, loc_reg.Reg.loc with
         | _, Reg.Unknown ->
           Cfg_regalloc_utils.fatal
-            "The instruction's no %d %s is still unknown after allocation" id
+            "The instruction's no. %d %s is still unknown after allocation" id
             name
         | None, _ -> ()
         | Some (Location.Reg _), Reg.Reg _ -> ()
         | Some (Location.Stack _), Reg.Stack _ -> ()
         | Some prev_loc, new_loc ->
           Cfg_regalloc_utils.fatal
-            "The instruction's no %d %s has changed precolored location from \
+            "The instruction's no. %d %s has changed precolored location from \
              %a to %a"
             id name Location.print prev_loc
-            (Printmach.loc ~unknown:(fun ppf -> Format.fprintf ppf "UK"))
+            (Printmach.loc ~reg_class:(Proc.register_class loc_reg)
+               ~unknown:(fun ppf -> Format.fprintf ppf "Unknown"))
             new_loc)
       reg_arr loc_arr;
-
     ()
 
   let verify t cfg =
@@ -130,13 +197,17 @@ module Description = struct
       if Hashtbl.find_opt seen_ids id |> Option.is_some
       then
         Cfg_regalloc_utils.fatal
-          "Duplicate instr id %d while checking post-allocation description" id;
+          "Duplicate instruction no. %d while checking post-allocation \
+           description"
+          id;
       Hashtbl.add seen_ids id ();
       match Hashtbl.find_opt instructions id, is_regalloc_specific with
       (* The instruction was present before. *)
       | Some old_instr, false ->
         if instr.desc <> old_instr.Instruction.desc
-        then Cfg_regalloc_utils.fatal "The instructions desc was changed %d" id;
+        then
+          Cfg_regalloc_utils.fatal "The instruction's no. %d desc was changed"
+            id;
         verify_reg_array ~id ~name:"argument" ~reg_arr:old_instr.Instruction.arg
           ~loc_arr:instr.arg;
         verify_reg_array ~id ~name:"result" ~reg_arr:old_instr.Instruction.res
@@ -146,12 +217,13 @@ module Description = struct
       | None, true -> ()
       | Some _, true ->
         Cfg_regalloc_utils.fatal
-          "Register allocation changed existing instruction into a register \
-           allocation specific instruction %d"
+          "Register allocation changed existing instruction no. %d into a \
+           register allocation specific instruction"
           id
       | None, false ->
         Cfg_regalloc_utils.fatal
-          "Register allocation added non-regalloc specific instruction %d" id
+          "Register allocation added non-regalloc specific instruction no. %d"
+          id
     in
     Cfg_with_layout.iter_instructions cfg
       ~instruction:(make_instruction_helper t check_instr)
@@ -164,14 +236,14 @@ module Description = struct
         if Hashtbl.find_opt seen_ids id |> Option.is_none && not can_be_removed
         then
           Cfg_regalloc_utils.fatal
-            "Instruction %d was deleted by register allocator" id)
+            "Instruction no. %d was deleted by register allocator" id)
       t.instructions;
     Hashtbl.iter
       (fun id _ ->
         if Hashtbl.find_opt seen_ids id |> Option.is_none
         then
           Cfg_regalloc_utils.fatal
-            "Terminator %d was deleted by register allocator" id)
+            "Terminator no. %d was deleted by register allocator" id)
       t.terminators;
     ()
 end
@@ -188,7 +260,7 @@ module Equation_set : sig
   val union : t -> t -> t
 
   val remove_result :
-    desc_res:Register.t array ->
+    reg_res:Register.t array ->
     loc_res:Location.t array ->
     t ->
     (t, string) Result.t
@@ -197,11 +269,11 @@ module Equation_set : sig
     destroyed:Location.t array -> t -> (unit, string) Result.t
 
   val add_argument :
-    desc_arg:Register.t array -> loc_arg:Location.t array -> t -> t
+    reg_arg:Register.t array -> loc_arg:Location.t array -> t -> t
 
-  val rename_loc : arg:Reg.location -> res:Reg.location -> t -> t
+  val rename_loc : arg:Location.t -> res:Location.t -> t -> t
 
-  val rename_reg : arg:int -> res:int -> t -> t
+  val rename_reg : arg:Register.t -> res:Register.t -> t -> t
 
   val print : Format.formatter -> t -> unit
 end = struct
@@ -221,18 +293,18 @@ end = struct
         req_eq = loc_eq)
       t
 
-  let remove_result ~desc_res ~loc_res t =
+  let remove_result ~reg_res ~loc_res t =
     let compatibile =
       Array.for_all2
         (fun reg loc -> compatibile_one ~reg ~loc t)
-        desc_res loc_res
+        reg_res loc_res
     in
     if compatibile
     then (
       let t = ref t in
       Array.iter2
         (fun reg loc -> t := remove (reg.Register.stamp, loc) !t)
-        desc_res loc_res;
+        reg_res loc_res;
       Ok !t)
     else Error "Unsatisfiable equations when removing result equations"
 
@@ -246,32 +318,35 @@ end = struct
     in
     if correct then Ok () else Error "Destroying a live location"
 
-  let add_argument ~desc_arg ~loc_arg t =
+  let add_argument ~reg_arg ~loc_arg t =
     let t = ref t in
     Array.iter2
       (fun reg loc -> t := add (reg.Register.stamp, loc) !t)
-      desc_arg loc_arg;
+      reg_arg loc_arg;
     !t
 
   let rename_loc ~arg ~res t =
-    let arg = Location.of_loc_exn arg in
-    let res = Location.of_loc_exn res in
     map (fun (stamp, loc) -> if loc = res then stamp, arg else stamp, loc) t
 
   let rename_reg ~arg ~res t =
-    map (fun (stamp, loc) -> if stamp = res then arg, loc else stamp, loc) t
+    map
+      (fun (stamp, loc) ->
+        if stamp = res.Register.stamp
+        then arg.Register.stamp, loc
+        else stamp, loc)
+      t
 
   let print ppf t =
     let first = ref true in
     iter
       (fun (stamp, loc) ->
         if !first then first := false else Format.fprintf ppf " ";
-        Format.fprintf ppf "%d=%a" stamp Location.print loc)
+        Format.fprintf ppf "%d=[%a]" stamp Location.print loc)
       t
 end
 
 let extract_loc_arr loc_arr =
-  Array.map (fun loc_reg -> Location.of_loc_exn loc_reg.Reg.loc) loc_arr
+  Array.map (fun loc_reg -> Location.of_reg_exn loc_reg) loc_arr
 
 module type Description_value = sig
   val description : Description.t
@@ -336,12 +411,12 @@ module Domain = struct
     match t.error with Some error -> Error error | None -> Ok t.equations
 
   let remove_exn_bucket equations =
-    let loc_reg = Proc.loc_exn_bucket in
-    let desc_reg =
-      { Register.stamp = loc_reg.stamp; loc = Location.of_loc loc_reg.loc }
+    let phys_reg = Proc.loc_exn_bucket in
+    let reg =
+      { Register.stamp = phys_reg.stamp; loc = Location.of_reg phys_reg }
     in
-    Equation_set.remove_result equations ~desc_res:[| desc_reg |]
-      ~loc_res:[| Location.of_loc_exn loc_reg.Reg.loc |]
+    Equation_set.remove_result equations ~reg_res:[| reg |]
+      ~loc_res:[| Option.get reg.Register.loc |]
     |> Result.map_error (fun message ->
            Printf.sprintf "While removing exn bucket: %s" message)
 
@@ -351,7 +426,6 @@ module Domain = struct
     let wrap_error res =
       Result.map_error
         (fun message ->
-          Format.printf "Wrapping error\n";
           let err =
             { Error.message;
               equations = t.equations;
@@ -366,15 +440,18 @@ module Domain = struct
         res
     in
     let exn =
+      (* If instruction can't raise [Option.is_none exn] then use empty set of
+         instructions as that's the same as skipping the step. *)
       Option.value exn ~default:bot
       |> to_result
-      (* Handle this here because in [exception_] we don't have enough info. *)
+      (* Handle this here because in [exception_] we don't have enough
+         information in order to give a meaningful error message. *)
       |> bind (fun exn -> remove_exn_bucket exn |> wrap_error)
     in
     let res =
       to_result t
       |> bind (fun equations ->
-             Equation_set.remove_result ~desc_res:reg_instr.Instruction.res
+             Equation_set.remove_result ~reg_res:reg_instr.Instruction.res
                ~loc_res:(extract_loc_arr loc_instr.res)
                equations
              |> wrap_error)
@@ -387,7 +464,7 @@ module Domain = struct
              |> Result.map (fun () -> equations)
              |> wrap_error)
       |> Result.map (fun equations ->
-             Equation_set.add_argument ~desc_arg:reg_instr.Instruction.arg
+             Equation_set.add_argument ~reg_arg:reg_instr.Instruction.arg
                ~loc_arg:(extract_loc_arr loc_instr.arg)
                equations)
     in
@@ -402,8 +479,10 @@ module Domain = struct
       assert (Array.length loc_instr.arg = 1);
       assert (Array.length loc_instr.res = 1);
       { equations =
-          Equation_set.rename_loc ~arg:loc_instr.arg.(0).loc
-            ~res:loc_instr.res.(0).loc equations;
+          Equation_set.rename_loc
+            ~arg:(Location.of_reg_exn loc_instr.arg.(0))
+            ~res:(Location.of_reg_exn loc_instr.res.(0))
+            equations;
         error = None
       }
 
@@ -415,8 +494,8 @@ module Domain = struct
       assert (Array.length reg_instr.arg = 1);
       assert (Array.length reg_instr.res = 1);
       { equations =
-          Equation_set.rename_reg ~arg:reg_instr.arg.(0).stamp
-            ~res:reg_instr.res.(0).stamp equations;
+          Equation_set.rename_reg ~arg:reg_instr.arg.(0) ~res:reg_instr.res.(0)
+            equations;
         error = None
       }
 end
@@ -463,22 +542,7 @@ end
 module Check_backwards (Desc_val : Description_value) =
   Cfg_dataflow.Backward (Domain) (Transfer (Desc_val))
 
-let verify desc cfg =
-  save_as_dot cfg "after";
-  Description.verify desc cfg;
-  let module Check_backwards = Check_backwards (struct
-    let description = desc
-  end) in
-  let res_instr =
-    Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-      ~map:Check_backwards.Instr ()
-    |> Result.get_ok
-  in
-  let res_block =
-    Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-      ~map:Check_backwards.Block ()
-    |> Result.get_ok
-  in
+let save_as_dot_with_equations ~res_instr ~res_block cfg filename =
   save_as_dot
     ~annotate_instr:
       [ (fun ppf instr ->
@@ -501,8 +565,26 @@ let verify desc cfg =
       | Some _ -> Format.fprintf ppf "ERROR ");
       Equation_set.print ppf res.Domain.equations;
       ())
-    cfg "annot";
-  Format.print_flush ();
+    cfg filename;
+  ()
+
+let verify desc cfg =
+  save_as_dot cfg "after.dot";
+  Description.verify desc cfg;
+  let module Check_backwards = Check_backwards (struct
+    let description = desc
+  end) in
+  let res_instr =
+    Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
+      ~map:Check_backwards.Instr ()
+    |> Result.get_ok
+  in
+  let res_block =
+    Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
+      ~map:Check_backwards.Block ()
+    |> Result.get_ok
+  in
+  save_as_dot_with_equations ~res_instr ~res_block cfg "annot.dot";
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
@@ -538,8 +620,7 @@ let verify desc cfg =
         ( loc_instr.id,
           fun ppf -> Format.fprintf ppf "%a" Cfg.print_terminator loc_instr )
     in
-
-    Format.printf "Check failed %d: %t: %s\n" id desc message;
+    Format.printf "Check failed %d:\n%t:\nMessage: %s\n" id desc message;
     Format.printf "Equations at moment of error: [%a]\n" Equation_set.print
       equations;
     Option.iter
@@ -548,5 +629,24 @@ let verify desc cfg =
           "Additional equations coming from the exception path: [%a]\n"
           Equation_set.print exn_equations)
       exn_equations;
+    Format.printf "Dumping cfg ...\n";
+    Format.print_flush ();
+    let filename =
+      Filename.temp_file
+        (X86_proc.string_of_symbol "" (Cfg_with_layout.cfg cfg).fun_name ^ "_")
+        ".dot"
+    in
+    let res_instr =
+      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
+        ~map:Check_backwards.Instr ()
+      |> Result.get_ok
+    in
+    let res_block =
+      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
+        ~map:Check_backwards.Block ()
+      |> Result.get_ok
+    in
+    save_as_dot_with_equations ~res_instr ~res_block cfg filename;
+    Format.printf "Cfg dumped into: %s\n" filename;
     Format.print_flush ();
     exit 1

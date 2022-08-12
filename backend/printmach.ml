@@ -23,19 +23,24 @@ open Interval
 
 module V = Backend_var
 
-let loc ~unknown ppf  l = 
+let loc ~reg_class ~unknown ppf  l = 
   match l with 
   | Unknown -> unknown ppf
   | Reg r ->
-      fprintf ppf "[%s]" (Proc.register_name r)
+      fprintf ppf "%s" (Proc.register_name r)
   | Stack(Local s) ->
-      fprintf ppf "[s%i]" s
+      fprintf ppf "s%s%i"
+        (match reg_class with
+        | 0 -> ""
+        | 1 -> "f"
+        | c -> Printf.sprintf "Unknown(%d)" c)
+        s
   | Stack(Incoming s) ->
-      fprintf ppf "[si%i]" s
+      fprintf ppf "si%i" s
   | Stack(Outgoing s) ->
-      fprintf ppf "[so%i]" s
+      fprintf ppf "so%i" s
   | Stack(Domainstate s) ->
-      fprintf ppf "[ds%i]" s
+      fprintf ppf "ds%i" s
 
 let reg ppf r =
   if not (Reg.anonymous r) then
@@ -44,7 +49,9 @@ let reg ppf r =
     fprintf ppf "%s"
       (match r.typ with Val -> "V" | Addr -> "A" | Int -> "I" | Float -> "F");
   fprintf ppf "/%i" r.stamp;
-  loc ~unknown:(fun _ -> ()) ppf r.loc
+  fprintf ppf "[";
+  loc ~reg_class:(Proc.register_class r) ~unknown:(fun _ -> ()) ppf r.loc;
+  fprintf ppf "]"
 
 let regs ppf v =
   match Array.length v with
