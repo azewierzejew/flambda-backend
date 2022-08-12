@@ -4,6 +4,8 @@ module Array : module type of ArrayLabels
 
 module List : module type of ListLabels
 
+val regalloc_debug : bool
+
 val on_fatal : f:(unit -> unit) -> unit
 
 val fatal : ('a, Format.formatter, unit, 'b) format4 -> 'a
