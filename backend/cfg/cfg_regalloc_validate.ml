@@ -15,15 +15,47 @@ let save_as_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
     ~always:(fun () -> close_out oc)
     ~exceptionally:(fun _exn -> Misc.remove_file filename)
 
-module Description = struct
-  module Instruction = struct
-    type 'a t =
-      { desc : 'a;
-        arg : Reg.t array;
-        res : Reg.t array
-      }
-  end
+module Location = struct
+  type t =
+    | Reg of int
+    | Stack of Reg.stack_location
 
+  let of_loc loc =
+    match loc with
+    | Reg.Unknown -> None
+    | Reg.Reg idx -> Some (Reg idx)
+    | Reg.Stack stack -> Some (Stack stack)
+
+  let of_loc_exn loc = of_loc loc |> Option.get
+
+  let to_loc t =
+    match t with Reg idx -> Reg.Reg idx | Stack stack -> Reg.Stack stack
+
+  let print ppf t =
+    Printmach.loc ~unknown:(fun _ -> failwith "unreachable") ppf (to_loc t)
+end
+
+module Register = struct
+  type t =
+    { stamp : int;
+      loc : Location.t option
+    }
+
+  let create reg =
+    let stamp = reg.Reg.stamp in
+    let loc = Location.of_loc reg.Reg.loc in
+    { stamp; loc }
+end
+
+module Instruction = struct
+  type 'a t =
+    { desc : 'a;
+      arg : Register.t array;
+      res : Register.t array
+    }
+end
+
+module Description = struct
   type t =
     { instructions : (int, basic Instruction.t) Hashtbl.t;
       terminators : (int, terminator Instruction.t) Hashtbl.t
@@ -51,7 +83,10 @@ module Description = struct
         Cfg_regalloc_utils.fatal
           "Duplicate instr id %d while creating pre-allocation description" id;
       Hashtbl.add instructions id
-        { Instruction.desc = instr.desc; arg = instr.arg; res = instr.res }
+        { Instruction.desc = instr.desc;
+          arg = Array.map Register.create instr.arg;
+          res = Array.map Register.create instr.res
+        }
     in
     let t =
       { instructions = Hashtbl.create 0; terminators = Hashtbl.create 0 }
@@ -60,6 +95,33 @@ module Description = struct
       ~instruction:(make_instruction_helper t add_instr)
       ~terminator:(make_terminator_helper t add_instr);
     t
+
+  let verify_reg_array ~id ~name ~reg_arr ~loc_arr =
+    if Array.length reg_arr <> Array.length loc_arr
+    then
+      Cfg_regalloc_utils.fatal
+        "The instruction's no %d %s count has changed. Now: %d. After: %d." id
+        name (Array.length loc_arr) (Array.length reg_arr);
+    Array.iter2
+      (fun reg_desc loc_reg ->
+        match reg_desc.Register.loc, loc_reg.Reg.loc with
+        | _, Reg.Unknown ->
+          Cfg_regalloc_utils.fatal
+            "The instruction's no %d %s is still unknown after allocation" id
+            name
+        | None, _ -> ()
+        | Some (Location.Reg _), Reg.Reg _ -> ()
+        | Some (Location.Stack _), Reg.Stack _ -> ()
+        | Some prev_loc, new_loc ->
+          Cfg_regalloc_utils.fatal
+            "The instruction's no %d %s has changed precolored location from \
+             %a to %a"
+            id name Location.print prev_loc
+            (Printmach.loc ~unknown:(fun ppf -> Format.fprintf ppf "UK"))
+            new_loc)
+      reg_arr loc_arr;
+
+    ()
 
   let verify t cfg =
     let seen_ids = Hashtbl.create 0 in
@@ -75,18 +137,10 @@ module Description = struct
       | Some old_instr, false ->
         if instr.desc <> old_instr.Instruction.desc
         then Cfg_regalloc_utils.fatal "The instructions desc was changed %d" id;
-        if Array.length instr.arg <> Array.length old_instr.Instruction.arg
-        then
-          Cfg_regalloc_utils.fatal
-            "The instructions arg count has changed. Now: %d. After: %d." id
-            (Array.length instr.arg)
-            (Array.length old_instr.Instruction.arg);
-        if Array.length instr.res <> Array.length old_instr.Instruction.res
-        then
-          Cfg_regalloc_utils.fatal
-            "The instructions res count has changed. Now: %d. After: %d." id
-            (Array.length instr.res)
-            (Array.length old_instr.Instruction.res);
+        verify_reg_array ~id ~name:"argument" ~reg_arr:old_instr.Instruction.arg
+          ~loc_arr:instr.arg;
+        verify_reg_array ~id ~name:"result" ~reg_arr:old_instr.Instruction.res
+          ~loc_arr:instr.res;
         ()
       (* Added spill/reload that wasn't before. *)
       | None, true -> ()
@@ -104,10 +158,10 @@ module Description = struct
       ~terminator:(make_terminator_helper t check_instr);
     Hashtbl.iter
       (fun id instr ->
-        let is_prologue =
+        let can_be_removed =
           match instr.Instruction.desc with Prologue -> true | _ -> false
         in
-        if Hashtbl.find_opt seen_ids id |> Option.is_none && not is_prologue
+        if Hashtbl.find_opt seen_ids id |> Option.is_none && not can_be_removed
         then
           Cfg_regalloc_utils.fatal
             "Instruction %d was deleted by register allocator" id)
@@ -134,12 +188,16 @@ module Equation_set : sig
   val union : t -> t -> t
 
   val remove_result :
-    reg_res:Reg.t array -> loc_res:Reg.t array -> t -> (t, string) Result.t
+    desc_res:Register.t array ->
+    loc_res:Location.t array ->
+    t ->
+    (t, string) Result.t
 
-  val verify_destroyed_registers :
-    destroyed:Reg.t array -> t -> (unit, string) Result.t
+  val verify_destroyed_locations :
+    destroyed:Location.t array -> t -> (unit, string) Result.t
 
-  val add_argument : reg_arg:Reg.t array -> loc_arg:Reg.t array -> t -> t
+  val add_argument :
+    desc_arg:Register.t array -> loc_arg:Location.t array -> t -> t
 
   val rename_loc : arg:Reg.location -> res:Reg.location -> t -> t
 
@@ -148,7 +206,7 @@ module Equation_set : sig
   val print : Format.formatter -> t -> unit
 end = struct
   module Equation = struct
-    type t = int * Reg.location
+    type t = int * Location.t
 
     let compare = compare
   end
@@ -156,45 +214,48 @@ end = struct
   include Set.Make (Equation)
 
   let compatibile_one ~reg ~loc t =
-    assert (loc <> Reg.Unknown);
     for_all
       (fun (eq_stamp, eq_loc) ->
-        let req_eq = eq_stamp = reg.Reg.stamp in
+        let req_eq = eq_stamp = reg.Register.stamp in
         let loc_eq = eq_loc = loc in
         req_eq = loc_eq)
       t
 
-  let remove_result ~reg_res ~loc_res t =
+  let remove_result ~desc_res ~loc_res t =
     let compatibile =
       Array.for_all2
-        (fun reg loc -> compatibile_one ~reg ~loc:loc.Reg.loc t)
-        reg_res loc_res
+        (fun reg loc -> compatibile_one ~reg ~loc t)
+        desc_res loc_res
     in
     if compatibile
     then (
       let t = ref t in
       Array.iter2
-        (fun reg loc -> t := remove (reg.Reg.stamp, loc.Reg.loc) !t)
-        reg_res loc_res;
+        (fun reg loc -> t := remove (reg.Register.stamp, loc) !t)
+        desc_res loc_res;
       Ok !t)
     else Error "Unsatisfiable equations when removing result equations"
 
-  let verify_destroyed_registers ~destroyed t =
+  let verify_destroyed_locations ~destroyed t =
+    (* CR azewierzejew for azewierzejew: Add checking stack for stack_location
+       other than Local. *)
     let correct =
       Array.for_all
-        (fun reg -> for_all (fun (_stamp, loc) -> reg.Reg.loc <> loc) t)
+        (fun des_loc -> for_all (fun (_stamp, loc) -> des_loc <> loc) t)
         destroyed
     in
-    if correct then Ok () else Error "Destroying a live register"
+    if correct then Ok () else Error "Destroying a live location"
 
-  let add_argument ~reg_arg ~loc_arg t =
+  let add_argument ~desc_arg ~loc_arg t =
     let t = ref t in
     Array.iter2
-      (fun reg loc -> t := add (reg.Reg.stamp, loc.Reg.loc) !t)
-      reg_arg loc_arg;
+      (fun reg loc -> t := add (reg.Register.stamp, loc) !t)
+      desc_arg loc_arg;
     !t
 
   let rename_loc ~arg ~res t =
+    let arg = Location.of_loc_exn arg in
+    let res = Location.of_loc_exn res in
     map (fun (stamp, loc) -> if loc = res then stamp, arg else stamp, loc) t
 
   let rename_reg ~arg ~res t =
@@ -205,11 +266,12 @@ end = struct
     iter
       (fun (stamp, loc) ->
         if !first then first := false else Format.fprintf ppf " ";
-        Format.fprintf ppf "%d=%a" stamp
-          (Printmach.loc ~unknown:(fun ppf -> Format.fprintf ppf "UK"))
-          loc)
+        Format.fprintf ppf "%d=%a" stamp Location.print loc)
       t
 end
+
+let extract_loc_arr loc_arr =
+  Array.map (fun loc_reg -> Location.of_loc_exn loc_reg.Reg.loc) loc_arr
 
 module type Description_value = sig
   val description : Description.t
@@ -219,7 +281,7 @@ module Error = struct
   type 'a t =
     { equations : Equation_set.t;
       exn_equations : Equation_set.t option;
-      reg_instr : 'a Description.Instruction.t;
+      reg_instr : 'a Instruction.t;
       loc_instr : 'a instruction;
       message : string
     }
@@ -274,24 +336,17 @@ module Domain = struct
     match t.error with Some error -> Error error | None -> Ok t.equations
 
   let remove_exn_bucket equations =
-    let reg = Proc.loc_exn_bucket in
-    Equation_set.remove_result equations ~reg_res:[| reg |] ~loc_res:[| reg |]
+    let loc_reg = Proc.loc_exn_bucket in
+    let desc_reg =
+      { Register.stamp = loc_reg.stamp; loc = Location.of_loc loc_reg.loc }
+    in
+    Equation_set.remove_result equations ~desc_res:[| desc_reg |]
+      ~loc_res:[| Location.of_loc_exn loc_reg.Reg.loc |]
     |> Result.map_error (fun message ->
            Printf.sprintf "While removing exn bucket: %s" message)
 
   let append_equations (type a) t ~(tag : a Error.Tag.t) ~exn
-      ~(reg_instr : a Description.Instruction.t) ~(loc_instr : a instruction)
-      ~destroyed =
-    if loc_instr.id = 19
-    then (
-      Format.printf "Beg TEST 19\n";
-      Format.printf "eq: %a\n" Equation_set.print t.equations;
-      Format.printf "er: ";
-      (match t.error with
-      | None -> Format.printf "No error"
-      | Some _ -> Format.printf "ERROR");
-      Format.printf "\n";
-      Format.printf "End TEST 19\n\n");
+      ~(reg_instr : a Instruction.t) ~(loc_instr : a instruction) ~destroyed =
     let bind f res = Result.bind res f in
     let wrap_error res =
       Result.map_error
@@ -319,22 +374,22 @@ module Domain = struct
     let res =
       to_result t
       |> bind (fun equations ->
-             Equation_set.remove_result
-               ~reg_res:reg_instr.Description.Instruction.res
-               ~loc_res:loc_instr.res equations
+             Equation_set.remove_result ~desc_res:reg_instr.Instruction.res
+               ~loc_res:(extract_loc_arr loc_instr.res)
+               equations
              |> wrap_error)
       |> bind (fun equations ->
              exn
              |> Result.map (fun exn_equations ->
                     Equation_set.union equations exn_equations))
       |> bind (fun equations ->
-             Equation_set.verify_destroyed_registers ~destroyed equations
+             Equation_set.verify_destroyed_locations ~destroyed equations
              |> Result.map (fun () -> equations)
              |> wrap_error)
       |> Result.map (fun equations ->
-             Equation_set.add_argument
-               ~reg_arg:reg_instr.Description.Instruction.arg
-               ~loc_arg:loc_instr.arg equations)
+             Equation_set.add_argument ~desc_arg:reg_instr.Instruction.arg
+               ~loc_arg:(extract_loc_arr loc_instr.arg)
+               equations)
     in
     match res with
     | Ok equations -> { equations; error = None }
@@ -356,7 +411,7 @@ module Domain = struct
     match t with
     | { error = Some _; _ } -> t
     | { error = None; equations } ->
-      let open! Description.Instruction in
+      let open! Instruction in
       assert (Array.length reg_instr.arg = 1);
       assert (Array.length reg_instr.res = 1);
       { equations =
@@ -390,14 +445,17 @@ module Transfer (Desc_val : Description_value) = struct
       in
       Domain.append_equations t ~tag:Error.Tag.Basic ~exn
         ~reg_instr:instr_before ~loc_instr:instr
-        ~destroyed:(Cfg_regalloc_utils.destroyed_at_basic instr.desc)
+        ~destroyed:
+          (Cfg_regalloc_utils.destroyed_at_basic instr.desc |> extract_loc_arr)
 
   let terminator t ~exn instr =
     let exn = if Cfg.can_raise_terminator instr.desc then Some exn else None in
     let instr_before = Hashtbl.find Desc_val.description.terminators instr.id in
     Domain.append_equations t ~tag:Terminator ~exn ~reg_instr:instr_before
       ~loc_instr:instr
-      ~destroyed:(Cfg_regalloc_utils.destroyed_at_terminator instr.desc)
+      ~destroyed:
+        (Cfg_regalloc_utils.destroyed_at_terminator instr.desc
+        |> extract_loc_arr)
 
   let exception_ t = t
 end
