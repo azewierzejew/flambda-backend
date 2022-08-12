@@ -259,22 +259,22 @@ let dump_basic ppf (basic : basic) =
   | Poptrap -> fprintf ppf "Poptrap"
   | Prologue -> fprintf ppf "Prologue"
 
-let dump_terminator' ?(args = [||]) ?(sep = "\n") ppf (terminator : terminator)
-    =
+let dump_terminator' ?(print_reg = Printmach.reg) ?(args = [||]) ?(sep = "\n")
+    ppf (terminator : terminator) =
   let first_arg =
     if Array.length args >= 1
-    then Format.fprintf Format.str_formatter " %a" Printmach.reg args.(0);
+    then Format.fprintf Format.str_formatter " %a" print_reg args.(0);
     Format.flush_str_formatter ()
   in
   let second_arg =
     if Array.length args >= 2
-    then Format.fprintf Format.str_formatter " %a" Printmach.reg args.(1);
+    then Format.fprintf Format.str_formatter " %a" print_reg args.(1);
     Format.flush_str_formatter ()
   in
   let print_args ppf args =
     if Array.length args = 0
     then ()
-    else Format.fprintf ppf " %a" Printmach.regs args
+    else Format.fprintf ppf " %a" (Printmach.regs' ~print_reg) args
   in
   let open Format in
   match terminator with
@@ -317,7 +317,7 @@ let dump_terminator' ?(args = [||]) ?(sep = "\n") ppf (terminator : terminator)
 
 let dump_terminator ?sep ppf terminator = dump_terminator' ?sep ppf terminator
 
-let dump_basic_instr ppf (instruction : basic instruction) =
+let print_basic' ?print_reg ppf (instruction : basic instruction) =
   let desc = Cfg_to_linear_desc.from_basic instruction.desc in
   let instruction =
     { Linear.desc;
@@ -329,19 +329,23 @@ let dump_basic_instr ppf (instruction : basic instruction) =
       live = Reg.Set.empty
     }
   in
-  Printlinear.instr ppf instruction
+  Printlinear.instr' ?print_reg ppf instruction
 
-let print_basic ppf (i : basic instruction) = dump_basic_instr ppf i
+let print_basic ppf i = print_basic' ppf i
 
-let print_terminator ppf (ti : terminator instruction) =
+let print_terminator' ?print_reg ppf (ti : terminator instruction) =
   if Array.length ti.res > 0
-  then Format.fprintf ppf "%a := " Printmach.regs ti.res;
-  dump_terminator' ~args:ti.arg ~sep:"\n" ppf ti.desc
+  then Format.fprintf ppf "%a := " (Printmach.regs' ?print_reg) ti.res;
+  dump_terminator' ?print_reg ~args:ti.arg ~sep:"\n" ppf ti.desc
 
-let print_instruction ppf i =
+let print_terminator ppf ti = print_terminator' ppf ti
+
+let print_instruction' ?print_reg ppf i =
   match i with
-  | `Basic i -> print_basic ppf i
-  | `Terminator i -> print_terminator ppf i
+  | `Basic i -> print_basic' ?print_reg ppf i
+  | `Terminator i -> print_terminator' ?print_reg ppf i
+
+let print_instruction ppf i = print_instruction' ppf i
 
 let can_raise_terminator (i : terminator) =
   match i with

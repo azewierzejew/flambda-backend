@@ -129,6 +129,12 @@ val print_terminator : Format.formatter -> terminator instruction -> unit
 
 val print_basic : Format.formatter -> basic instruction -> unit
 
+val print_instruction' :
+  ?print_reg:(Format.formatter -> Reg.t -> unit) ->
+  Format.formatter ->
+  [`Basic of basic instruction | `Terminator of terminator instruction] ->
+  unit
+
 val print_instruction :
   Format.formatter ->
   [`Basic of basic instruction | `Terminator of terminator instruction] ->
