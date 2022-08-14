@@ -2,18 +2,6 @@
 
 include Cfg_intf.S
 
-let save_as_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
-    ?annotate_block_end ?annotate_succ t filename =
-  if !Cfg.verbose then Printf.printf "Writing cfg to %s\n" filename;
-  let oc = open_out filename in
-  Misc.try_finally
-    (fun () ->
-      let ppf = Format.formatter_of_out_channel oc in
-      Cfg_with_layout.print_dot ?show_instr ?show_exn ?annotate_instr
-        ?annotate_block ?annotate_block_end ?annotate_succ ppf t)
-    ~always:(fun () -> close_out oc)
-    ~exceptionally:(fun _exn -> Misc.remove_file filename)
-
 module Location = struct
   module Stack = struct
     type t =
@@ -171,7 +159,10 @@ module Description = struct
   let make_terminator_helper t f instr = f false t.terminators instr
 
   let create cfg =
-    save_as_dot cfg "before.dot";
+    if Cfg_regalloc_utils.regalloc_debug
+    then
+      Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
+        "before_allocation_before_validation";
     let add_instr is_reg_alloc_specific instructions instr =
       let id = instr.id in
       if is_reg_alloc_specific
@@ -583,8 +574,8 @@ let print_reg_as_loc ppf reg =
     ~unknown:(fun ppf -> Format.fprintf ppf "<Unknown>")
     ppf reg.Reg.loc
 
-let save_as_dot_with_equations ~desc ~res_instr ~res_block cfg filename =
-  save_as_dot
+let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
+  Cfg_with_layout.save_as_dot
     ~annotate_instr:
       [ (fun ppf instr ->
           let id =
@@ -618,13 +609,15 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block cfg filename =
       | Some _ -> Format.fprintf ppf "ERROR ");
       Equation_set.print ppf res.Domain.equations;
       ())
-    cfg filename;
+    ?filename cfg msg;
   ()
 
 let verify desc cfg =
-  save_as_dot
-    ~annotate_instr:[Cfg.print_instruction' ~print_reg:print_reg_as_loc]
-    cfg "after.dot";
+  if Cfg_regalloc_utils.regalloc_debug
+  then
+    Cfg_with_layout.save_as_dot
+      ~annotate_instr:[Cfg.print_instruction' ~print_reg:print_reg_as_loc]
+      ~filename:"after.dot" cfg "after_allocation_before_validation";
   Description.verify desc cfg;
   let module Check_backwards = Check_backwards (struct
     let description = desc
@@ -639,7 +632,10 @@ let verify desc cfg =
       ~map:Check_backwards.Block ()
     |> Result.get_ok
   in
-  save_as_dot_with_equations ~desc ~res_instr ~res_block cfg "annot.dot";
+  if Cfg_regalloc_utils.regalloc_debug
+  then
+    save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename:"annot.dot"
+      cfg "after_allocation_after_validation";
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
@@ -701,7 +697,8 @@ let verify desc cfg =
         ~map:Check_backwards.Block ()
       |> Result.get_ok
     in
-    save_as_dot_with_equations ~desc ~res_instr ~res_block cfg filename;
+    save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename cfg
+      "vallidation_error";
     Format.printf "Cfg dumped into: %s\n" filename;
     Format.print_flush ();
     exit 1

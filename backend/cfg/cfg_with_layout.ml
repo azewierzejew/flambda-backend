@@ -265,21 +265,26 @@ let print_dot ?(show_instr = true) ?(show_exn = true)
   Format.fprintf ppf "}\n%!";
   ()
 
-let save_as_dot t ?show_instr ?show_exn ?annotate_block ?annotate_succ msg =
+let save_as_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
+    ?annotate_block_end ?annotate_succ ?filename t msg =
   let filename =
-    Printf.sprintf "%s%s%s.dot"
-      (* some of all the special characters that confuse assemblers also confuse
-         dot. get rid of them.*)
-      (X86_proc.string_of_symbol "" t.cfg.fun_name)
-      (if msg = "" then "" else ".")
-      msg
+    match filename with
+    | Some filename -> filename
+    | None ->
+      Printf.sprintf "%s%s%s.dot"
+        (* some of all the special characters that confuse assemblers also
+           confuse dot. get rid of them.*)
+        (X86_proc.string_of_symbol "" t.cfg.fun_name)
+        (if msg = "" then "" else ".")
+        msg
   in
   if !Cfg.verbose then Printf.printf "Writing cfg for %s to %s\n" msg filename;
   let oc = open_out filename in
   Misc.try_finally
     (fun () ->
       let ppf = Format.formatter_of_out_channel oc in
-      print_dot ?show_instr ?show_exn ?annotate_block ?annotate_succ ppf t)
+      print_dot ?show_instr ?show_exn ?annotate_instr ?annotate_block
+        ?annotate_block_end ?annotate_succ ppf t)
     ~always:(fun () -> close_out oc)
     ~exceptionally:(fun _exn -> Misc.remove_file filename)
 
