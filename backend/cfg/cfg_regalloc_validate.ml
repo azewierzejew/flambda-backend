@@ -100,6 +100,10 @@ module Location = struct
     Printmach.loc ~reg_class:(reg_class_lossy t)
       ~unknown:(fun _ -> failwith "unreachable")
       ppf (to_loc_lossy t)
+
+  let compare (t1 : t) (t2 : t) : int = compare t1 t2
+
+  let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
 
 module Register = struct
@@ -118,7 +122,24 @@ module Register = struct
     }
 
   let to_dummy_reg t =
-    { Reg.dummy with raw_name = t.raw_name; typ = t.typ; stamp = t.stamp }
+    { Reg.dummy with
+      raw_name = t.raw_name;
+      typ = t.typ;
+      stamp = t.stamp;
+      loc =
+        Option.map Location.to_loc_lossy t.loc
+        |> Option.value ~default:Reg.Unknown
+    }
+
+  let print ppf t = Printmach.reg ppf (to_dummy_reg t)
+
+  let compare (t1 : t) (t2 : t) : int =
+    let stamp_cmp = Int.compare t1.stamp t2.stamp in
+    let t_eq = t1 = t2 in
+    assert (t_eq = (stamp_cmp = 0));
+    stamp_cmp
+
+  let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
 
 module Instruction = struct
@@ -198,8 +219,9 @@ module Description = struct
             "The instruction's no. %d %s has changed precolored location from \
              %a to %a"
             id name Location.print prev_loc
-            (Printmach.loc ~reg_class:(Proc.register_class loc_reg)
-               ~unknown:(fun ppf -> Format.fprintf ppf "Unknown"))
+            (Printmach.loc ?wrap_out:None
+               ~reg_class:(Proc.register_class loc_reg) ~unknown:(fun ppf ->
+                 Format.fprintf ppf "Unknown"))
             new_loc)
       reg_arr loc_arr;
     ()
@@ -292,19 +314,21 @@ module Equation_set : sig
   val print : Format.formatter -> t -> unit
 end = struct
   module Equation = struct
-    type t = int * Location.t
+    type t = Register.t * Location.t
 
-    let compare = compare
+    let compare (r1, l1) (r2, l2) =
+      let r_cmp = Register.compare r1 r2 in
+      if r_cmp <> 0 then r_cmp else Location.compare l1 l2
   end
 
   include Set.Make (Equation)
 
   let compatibile_one ~reg ~loc t =
     for_all
-      (fun (eq_stamp, eq_loc) ->
-        let req_eq = eq_stamp = reg.Register.stamp in
-        let loc_eq = eq_loc = loc in
-        req_eq = loc_eq)
+      (fun (eq_reg, eq_loc) ->
+        let reg_eq = Register.equal eq_reg reg in
+        let loc_eq = Location.equal eq_loc loc in
+        reg_eq = loc_eq)
       t
 
   let remove_result ~reg_res ~loc_res t =
@@ -316,9 +340,7 @@ end = struct
     if compatibile
     then (
       let t = ref t in
-      Array.iter2
-        (fun reg loc -> t := remove (reg.Register.stamp, loc) !t)
-        reg_res loc_res;
+      Array.iter2 (fun reg loc -> t := remove (reg, loc) !t) reg_res loc_res;
       Ok !t)
     else Error "Unsatisfiable equations when removing result equations"
 
@@ -334,9 +356,7 @@ end = struct
 
   let add_argument ~reg_arg ~loc_arg t =
     let t = ref t in
-    Array.iter2
-      (fun reg loc -> t := add (reg.Register.stamp, loc) !t)
-      reg_arg loc_arg;
+    Array.iter2 (fun reg loc -> t := add (reg, loc) !t) reg_arg loc_arg;
     !t
 
   let rename_loc ~arg ~res t =
@@ -344,10 +364,8 @@ end = struct
 
   let rename_reg ~arg ~res t =
     map
-      (fun (stamp, loc) ->
-        if stamp = res.Register.stamp
-        then arg.Register.stamp, loc
-        else stamp, loc)
+      (fun (eq_reg, loc) ->
+        if Register.equal eq_reg res then arg, loc else eq_reg, loc)
       t
 
   let print ppf t =
@@ -355,7 +373,7 @@ end = struct
     iter
       (fun (stamp, loc) ->
         if !first then first := false else Format.fprintf ppf " ";
-        Format.fprintf ppf "%d=[%a]" stamp Location.print loc)
+        Format.fprintf ppf "%a=[%a]" Register.print stamp Location.print loc)
       t
 end
 
