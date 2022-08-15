@@ -95,6 +95,7 @@ module type Backward_S = sig
   type _ map =
     | Block : domain Label.Tbl.t map
     | Instr : domain Instr.Tbl.t map
+    | Both : (domain Instr.Tbl.t * domain Label.Tbl.t) map
 
   val run :
     Cfg.t ->

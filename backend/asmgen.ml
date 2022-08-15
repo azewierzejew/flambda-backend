@@ -371,7 +371,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
         let cfg_description = Cfg_regalloc_validate.Description.create cfg in
         cfg
         ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
-        ++ Cfg_regalloc_validate.verify cfg_description
+        ++ Cfg_regalloc_validate.verify_exn cfg_description
         ++ Cfg_regalloc_utils.simplify_cfg
         ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run
       | true, _ | false, Upstream ->

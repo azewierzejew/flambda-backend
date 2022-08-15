@@ -273,8 +273,7 @@ module Description = struct
         then
           Cfg_regalloc_utils.fatal
             "Terminator no. %d was deleted by register allocator" id)
-      t.terminators;
-    ()
+      t.terminators
 end
 
 module Equation_set : sig
@@ -389,26 +388,6 @@ end = struct
       t
 end
 
-module Error = struct
-  type 'a t =
-    { equations : Equation_set.t;
-      exn_equations : Equation_set.t option;
-      reg_instr : 'a Instruction.t;
-      loc_instr : 'a instruction;
-      message : string
-    }
-
-  module Tag = struct
-    type 'a t =
-      | Terminator : terminator t
-      | Basic : basic t
-  end
-
-  type packed =
-    | Terminator : terminator t -> packed
-    | Basic : basic t -> packed
-end
-
 let extract_loc_arr loc_arr =
   Array.map (fun loc_reg -> Location.of_reg_exn loc_reg) loc_arr
 
@@ -416,7 +395,68 @@ module type Description_value = sig
   val description : Description.t
 end
 
+let print_reg_as_loc ppf reg =
+  Printmach.loc ~reg_class:(Proc.register_class reg)
+    ~unknown:(fun ppf -> Format.fprintf ppf "<Unknown>")
+    ppf reg.Reg.loc
+
 module Domain = struct
+  module Error = struct
+    type 'a t =
+      { equations : Equation_set.t;
+        exn_equations : Equation_set.t option;
+        reg_instr : 'a Instruction.t;
+        loc_instr : 'a instruction;
+        message : string
+      }
+
+    module Tag = struct
+      type 'a t =
+        | Terminator : terminator t
+        | Basic : basic t
+    end
+
+    type packed =
+      | Terminator : terminator t -> packed
+      | Basic : basic t -> packed
+
+    let print_packed ppf (error : packed) =
+      let message, equations, exn_equations, id, reg_instr, loc_instr =
+        match error with
+        | Basic { loc_instr; reg_instr; equations; exn_equations; message } ->
+          ( message,
+            equations,
+            exn_equations,
+            loc_instr.id,
+            `Basic (Instruction.to_prealloc ~alloced:loc_instr reg_instr),
+            `Basic loc_instr )
+        | Terminator { loc_instr; reg_instr; equations; exn_equations; message }
+          ->
+          ( message,
+            equations,
+            exn_equations,
+            loc_instr.id,
+            `Terminator (Instruction.to_prealloc ~alloced:loc_instr reg_instr),
+            `Terminator loc_instr )
+      in
+      Format.fprintf ppf "Check failed in instr %d:\n" id;
+      Format.fprintf ppf "pre: %a\n" Cfg.print_instruction reg_instr;
+
+      Format.fprintf ppf "post: %a\n"
+        (Cfg.print_instruction' ~print_reg:print_reg_as_loc)
+        loc_instr;
+      Format.fprintf ppf "Message: %s\n" message;
+      Format.fprintf ppf "Equations at moment of error: [%a]\n"
+        Equation_set.print equations;
+      Option.iter
+        (fun exn_equations ->
+          Format.fprintf ppf
+            "Additional equations coming from the exception path: [%a]\n"
+            Equation_set.print exn_equations)
+        exn_equations;
+      ()
+  end
+
   (** This type logically works as [(Equation_set.t, Error.packed) Result.t] but
       in case there's an error we want to know the "last known equations" for a
       given instruction. Therefore [{equations; error = None}] corresponds to a
@@ -597,8 +637,8 @@ module Transfer (Desc_val : Description_value) = struct
       let instr_before =
         Hashtbl.find Desc_val.description.instructions instr.id
       in
-      Domain.append_equations t ~tag:Error.Tag.Basic ~exn
-        ~reg_instr:instr_before ~loc_instr:instr
+      Domain.append_equations t ~tag:Basic ~exn ~reg_instr:instr_before
+        ~loc_instr:instr
         ~destroyed:
           (Cfg_regalloc_utils.destroyed_at_basic instr.desc |> extract_loc_arr)
 
@@ -619,11 +659,6 @@ end
 
 module Check_backwards (Desc_val : Description_value) =
   Cfg_dataflow.Backward (Domain) (Transfer (Desc_val))
-
-let print_reg_as_loc ppf reg =
-  Printmach.loc ~reg_class:(Proc.register_class reg)
-    ~unknown:(fun ppf -> Format.fprintf ppf "<Unknown>")
-    ppf reg.Reg.loc
 
 let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
   Cfg_with_layout.save_as_dot
@@ -653,7 +688,45 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
     ?filename cfg msg;
   ()
 
-let verify desc cfg =
+module Error = struct
+  module Source = struct
+    type t =
+      | At_instruction of Domain.Error.packed
+      | At_entrypoint of { message : string }
+
+    let print (ppf : Format.formatter) (t : t) : unit =
+      match t with
+      | At_instruction error -> Domain.Error.print_packed ppf error
+      | At_entrypoint _ -> failwith "printing [In_final_result] unimplemented"
+
+    let _ = At_entrypoint { message = "" }
+  end
+
+  type t =
+    { source : Source.t;
+      res_instr : Domain.t Cfg_dataflow.Instr.Tbl.t;
+      res_block : Domain.t Label.Tbl.t;
+      desc : Description.t;
+      cfg : Cfg_with_layout.t
+    }
+
+  let print (ppf : Format.formatter)
+      ({ source; res_instr; res_block; desc; cfg } : t) : unit =
+    Source.print ppf source;
+    let filename =
+      Filename.temp_file
+        (X86_proc.string_of_symbol "" (Cfg_with_layout.cfg cfg).fun_name ^ "_")
+        ".dot"
+    in
+    Format.fprintf ppf "Dumping cfg into %s ...\n" filename;
+    save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename cfg
+      "vallidation_error";
+    Format.fprintf ppf "Dumped cfg into: %s\n" filename;
+    ()
+end
+
+let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
+    (Cfg_with_layout.t, Error.t) Result.t =
   if Cfg_regalloc_utils.regalloc_debug
   then
     Cfg_with_layout.save_as_dot
@@ -663,20 +736,15 @@ let verify desc cfg =
   let module Check_backwards = Check_backwards (struct
     let description = desc
   end) in
-  let res_instr =
+  let res_instr, res_block =
     Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-      ~map:Check_backwards.Instr ()
+      ~map:Check_backwards.Both ()
     |> Result.get_ok
   in
-  (if Cfg_regalloc_utils.regalloc_debug
+  if Cfg_regalloc_utils.regalloc_debug
   then
-    let res_block =
-      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-        ~map:Check_backwards.Block ()
-      |> Result.get_ok
-    in
     save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename:"annot.dot"
-      cfg "after_allocation_after_validation");
+      cfg "after_allocation_after_validation";
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
@@ -687,54 +755,15 @@ let verify desc cfg =
     in
     Cfg_dataflow.Instr.Tbl.find res_instr entry_id
   in
+  (* CR azewierzejew for azewierzejew: Verify the final set of equations. *)
   match result with
-  | { error = None; _ } -> cfg
-  | { error =
-        Some
-          (Terminator
-             { equations; message; reg_instr = _; loc_instr = _; exn_equations }
-          as error);
-      _
-    }
-  | { error =
-        Some
-          (Basic
-             { equations; message; reg_instr = _; loc_instr = _; exn_equations }
-          as error);
-      _
-    } ->
-    let id, instr =
-      match error with
-      | Basic { loc_instr; _ } ->
-        ( loc_instr.id,
-          fun ppf -> Format.fprintf ppf "%a" Cfg.print_basic loc_instr )
-      | Terminator { loc_instr; _ } ->
-        ( loc_instr.id,
-          fun ppf -> Format.fprintf ppf "%a" Cfg.print_terminator loc_instr )
-    in
-    Format.printf "Check failed %d:\n%t:\nMessage: %s\n" id instr message;
-    Format.printf "Equations at moment of error: [%a]\n" Equation_set.print
-      equations;
-    Option.iter
-      (fun exn_equations ->
-        Format.printf
-          "Additional equations coming from the exception path: [%a]\n"
-          Equation_set.print exn_equations)
-      exn_equations;
-    Format.printf "Dumping cfg ...\n";
-    Format.print_flush ();
-    let filename =
-      Filename.temp_file
-        (X86_proc.string_of_symbol "" (Cfg_with_layout.cfg cfg).fun_name ^ "_")
-        ".dot"
-    in
-    let res_block =
-      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-        ~map:Check_backwards.Block ()
-      |> Result.get_ok
-    in
-    save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename cfg
-      "vallidation_error";
-    Format.printf "Cfg dumped into: %s\n" filename;
-    Format.print_flush ();
+  | { error = None; _ } -> Ok cfg
+  | { error = Some error; _ } ->
+    Error { source = At_instruction error; res_instr; res_block; desc; cfg }
+
+let verify_exn desc cfg =
+  match verify desc cfg with
+  | Ok cfg -> cfg
+  | Error error ->
+    Format.printf "%a%!" Error.print error;
     exit 1

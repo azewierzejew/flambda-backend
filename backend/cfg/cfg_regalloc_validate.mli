@@ -6,4 +6,13 @@ module Description : sig
   val create : Cfg_with_layout.t -> t
 end
 
-val verify : Description.t -> Cfg_with_layout.t -> Cfg_with_layout.t
+module Error : sig
+  type t
+
+  val print : Format.formatter -> t -> unit
+end
+
+val verify :
+  Description.t -> Cfg_with_layout.t -> (Cfg_with_layout.t, Error.t) Result.t
+
+val verify_exn : Description.t -> Cfg_with_layout.t -> Cfg_with_layout.t
