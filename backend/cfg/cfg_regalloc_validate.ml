@@ -124,6 +124,8 @@ module Register = struct
   let compare (t1 : t) (t2 : t) : int =
     let stamp_cmp = Int.compare t1.stamp t2.stamp in
     let t_eq = t1 = t2 in
+    (* Check that stamps are equal iff every value in the [Register] is
+       equal. *)
     assert (t_eq = (stamp_cmp = 0));
     stamp_cmp
 
@@ -153,34 +155,36 @@ module Description = struct
 
   let make_instruction_helper t f instr =
     f
-      (match instr.desc with Op (Spill | Reload) -> true | _ -> false)
+      ~is_regalloc_specific:
+        (match instr.desc with Op (Spill | Reload) -> true | _ -> false)
       t.instructions instr
 
-  let make_terminator_helper t f instr = f false t.terminators instr
+  let make_terminator_helper t f instr =
+    f ~is_regalloc_specific:false t.terminators instr
+
+  let add_instr ~is_regalloc_specific instructions instr =
+    let id = instr.id in
+    if is_regalloc_specific
+    then
+      Cfg_regalloc_utils.fatal
+        "Instruction %d is specific to the regalloc phase while creating \
+         pre-allocation description"
+        id;
+    if Hashtbl.find_opt instructions id |> Option.is_some
+    then
+      Cfg_regalloc_utils.fatal
+        "Duplicate instr id %d while creating pre-allocation description" id;
+    Hashtbl.add instructions id
+      { Instruction.desc = instr.desc;
+        arg = Array.map Register.create instr.arg;
+        res = Array.map Register.create instr.res
+      }
 
   let create cfg =
     if Cfg_regalloc_utils.regalloc_debug
     then
       Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
         "before_allocation_before_validation";
-    let add_instr is_reg_alloc_specific instructions instr =
-      let id = instr.id in
-      if is_reg_alloc_specific
-      then
-        Cfg_regalloc_utils.fatal
-          "Instruction %d is specific to the regalloc phase while creating \
-           pre-allocation description"
-          id;
-      if Hashtbl.find_opt instructions id |> Option.is_some
-      then
-        Cfg_regalloc_utils.fatal
-          "Duplicate instr id %d while creating pre-allocation description" id;
-      Hashtbl.add instructions id
-        { Instruction.desc = instr.desc;
-          arg = Array.map Register.create instr.arg;
-          res = Array.map Register.create instr.res
-        }
-    in
     let t =
       { instructions = Hashtbl.create 0; terminators = Hashtbl.create 0 }
     in
@@ -197,66 +201,64 @@ module Description = struct
         name (Array.length loc_arr) (Array.length reg_arr);
     Array.iter2
       (fun reg_desc loc_reg ->
-        match reg_desc.Register.loc, loc_reg.Reg.loc with
-        | _, Reg.Unknown ->
+        match reg_desc.Register.loc, Location.of_reg loc_reg with
+        | _, None ->
           Cfg_regalloc_utils.fatal
             "The instruction's no. %d %s is still unknown after allocation" id
             name
         | None, _ -> ()
-        | Some (Location.Reg _), Reg.Reg _ -> ()
-        | Some (Location.Stack _), Reg.Stack _ -> ()
-        | Some prev_loc, new_loc ->
+        | Some l1, Some l2 when Location.equal l1 l2 -> ()
+        | Some prev_loc, Some new_loc ->
           Cfg_regalloc_utils.fatal
             "The instruction's no. %d %s has changed precolored location from \
              %a to %a"
-            id name Location.print prev_loc
-            (Printmach.loc ?wrap_out:None
-               ~reg_class:(Proc.register_class loc_reg) ~unknown:(fun ppf ->
-                 Format.fprintf ppf "Unknown"))
-            new_loc)
+            id name Location.print prev_loc Location.print new_loc)
       reg_arr loc_arr;
     ()
 
-  let verify t cfg =
-    let seen_ids = Hashtbl.create 0 in
-    let check_instr is_regalloc_specific instructions instr =
-      let id = instr.id in
-      if Hashtbl.find_opt seen_ids id |> Option.is_some
+  let verify_instr ~seen_ids ~is_regalloc_specific instructions instr =
+    let id = instr.id in
+    if Hashtbl.find_opt seen_ids id |> Option.is_some
+    then
+      Cfg_regalloc_utils.fatal
+        "Duplicate instruction no. %d while checking post-allocation \
+         description"
+        id;
+    Hashtbl.add seen_ids id ();
+    match Hashtbl.find_opt instructions id, is_regalloc_specific with
+    (* The instruction was present before. *)
+    | Some old_instr, false ->
+      if instr.desc <> old_instr.Instruction.desc
       then
-        Cfg_regalloc_utils.fatal
-          "Duplicate instruction no. %d while checking post-allocation \
-           description"
-          id;
-      Hashtbl.add seen_ids id ();
-      match Hashtbl.find_opt instructions id, is_regalloc_specific with
-      (* The instruction was present before. *)
-      | Some old_instr, false ->
-        if instr.desc <> old_instr.Instruction.desc
-        then
-          Cfg_regalloc_utils.fatal "The instruction's no. %d desc was changed"
-            id;
-        verify_reg_array ~id ~name:"argument" ~reg_arr:old_instr.Instruction.arg
-          ~loc_arr:instr.arg;
-        verify_reg_array ~id ~name:"result" ~reg_arr:old_instr.Instruction.res
-          ~loc_arr:instr.res;
-        ()
-      (* Added spill/reload that wasn't before. *)
-      | None, true -> ()
-      | Some _, true ->
-        Cfg_regalloc_utils.fatal
-          "Register allocation changed existing instruction no. %d into a \
-           register allocation specific instruction"
-          id
-      | None, false ->
-        Cfg_regalloc_utils.fatal
-          "Register allocation added non-regalloc specific instruction no. %d"
-          id
+        Cfg_regalloc_utils.fatal "The instruction's no. %d desc was changed" id;
+      verify_reg_array ~id ~name:"argument" ~reg_arr:old_instr.Instruction.arg
+        ~loc_arr:instr.arg;
+      verify_reg_array ~id ~name:"result" ~reg_arr:old_instr.Instruction.res
+        ~loc_arr:instr.res;
+      ()
+    (* Added spill/reload that wasn't before. *)
+    | None, true -> ()
+    | Some _, true ->
+      Cfg_regalloc_utils.fatal
+        "Register allocation changed existing instruction no. %d into a \
+         register allocation specific instruction"
+        id
+    | None, false ->
+      Cfg_regalloc_utils.fatal
+        "Register allocation added non-regalloc specific instruction no. %d" id
+
+  let verify t cfg =
+    let seen_ids =
+      Hashtbl.create
+        (Hashtbl.length t.instructions + Hashtbl.length t.terminators)
     in
     Cfg_with_layout.iter_instructions cfg
-      ~instruction:(make_instruction_helper t check_instr)
-      ~terminator:(make_terminator_helper t check_instr);
+      ~instruction:(make_instruction_helper t (verify_instr ~seen_ids))
+      ~terminator:(make_terminator_helper t (verify_instr ~seen_ids));
     Hashtbl.iter
       (fun id instr ->
+        (* CR azewierzejew for azewierzejew: We would like to do an actual check
+           whether [Prologue] can be removed. *)
         let can_be_removed =
           match instr.Instruction.desc with Prologue -> true | _ -> false
         in
@@ -279,8 +281,6 @@ module Equation_set : sig
   type t
 
   val empty : t
-
-  val compare : t -> t -> int
 
   val equal : t -> t -> bool
 
@@ -315,35 +315,53 @@ end = struct
   include Set.Make (Equation)
 
   let compatibile_one ~reg ~loc t =
-    for_all
+    let res = ref (Ok ()) in
+    iter
       (fun (eq_reg, eq_loc) ->
         let reg_eq = Register.equal eq_reg reg in
         let loc_eq = Location.equal eq_loc loc in
-        reg_eq = loc_eq)
-      t
+        if reg_eq <> loc_eq
+        then (
+          Format.fprintf Format.str_formatter
+            "Unsatisfiable equations when removing result equations. Equation \
+             %a=[%a]. Result reg: %a, result location: %a"
+            Register.print eq_reg Location.print eq_loc Register.print reg
+            Location.print loc;
+          let message = Format.flush_str_formatter () in
+          res := Error message))
+      t;
+    !res
 
   let remove_result ~reg_res ~loc_res t =
-    let compatibile =
-      Array.for_all2
-        (fun reg loc -> compatibile_one ~reg ~loc t)
-        reg_res loc_res
-    in
-    if compatibile
-    then (
-      let t = ref t in
-      Array.iter2 (fun reg loc -> t := remove (reg, loc) !t) reg_res loc_res;
-      Ok !t)
-    else Error "Unsatisfiable equations when removing result equations"
+    let compatibile = ref (Ok ()) in
+    Array.iter2
+      (fun reg loc ->
+        compatibile
+          := Result.bind !compatibile (fun () -> compatibile_one ~reg ~loc t))
+      reg_res loc_res;
+    Result.bind !compatibile (fun () ->
+        let t = ref t in
+        Array.iter2 (fun reg loc -> t := remove (reg, loc) !t) reg_res loc_res;
+        Ok !t)
 
   let verify_destroyed_locations ~destroyed t =
     (* CR azewierzejew for azewierzejew: Add checking stack for stack_location
        other than Local. *)
-    let correct =
-      Array.for_all
-        (fun des_loc -> for_all (fun (_stamp, loc) -> des_loc <> loc) t)
-        destroyed
-    in
-    if correct then Ok () else Error "Destroying a live location"
+    Array.fold_left
+      (fun acc des_loc ->
+        Result.bind acc (fun () ->
+            fold
+              (fun (_stamp, loc) acc ->
+                Result.bind acc (fun () ->
+                    if des_loc <> loc
+                    then Ok ()
+                    else (
+                      Format.fprintf Format.str_formatter
+                        "Destroying a live location %a" Location.print des_loc;
+                      let message = Format.flush_str_formatter () in
+                      Error message)))
+              t (Ok ())))
+      (Ok ()) destroyed
 
   let add_argument ~reg_arg ~loc_arg t =
     let t = ref t in
@@ -351,7 +369,10 @@ end = struct
     !t
 
   let rename_loc ~arg ~res t =
-    map (fun (stamp, loc) -> if loc = res then stamp, arg else stamp, loc) t
+    map
+      (fun (stamp, loc) ->
+        if Location.equal loc res then stamp, arg else stamp, loc)
+      t
 
   let rename_reg ~arg ~res t =
     map
@@ -366,13 +387,6 @@ end = struct
         if !first then first := false else Format.fprintf ppf " ";
         Format.fprintf ppf "%a=[%a]" Register.print stamp Location.print loc)
       t
-end
-
-let extract_loc_arr loc_arr =
-  Array.map (fun loc_reg -> Location.of_reg_exn loc_reg) loc_arr
-
-module type Description_value = sig
-  val description : Description.t
 end
 
 module Error = struct
@@ -393,11 +407,23 @@ module Error = struct
   type packed =
     | Terminator : terminator t -> packed
     | Basic : basic t -> packed
+end
 
-  let compare (_ : packed) (_ : packed) = 0
+let extract_loc_arr loc_arr =
+  Array.map (fun loc_reg -> Location.of_reg_exn loc_reg) loc_arr
+
+module type Description_value = sig
+  val description : Description.t
 end
 
 module Domain = struct
+  (** This type logically works as [(Equation_set.t, Error.packed) Result.t] but
+      in case there's an error we want to know the "last known equations" for a
+      given instruction. Therefore [{equations; error = None}] corresponds to a
+      [Ok equations] and [{equations; error = Some error}] corresponds to [Error
+      error] where [equations] is biggest set of equations for a given
+      instruction known before the error was found. All the values inside
+      [error] correspond to values from the point of error. *)
   type t =
     { equations : Equation_set.t;
       error : Error.packed option
@@ -405,27 +431,36 @@ module Domain = struct
 
   let bot = { equations = Equation_set.empty; error = None }
 
-  let compare t1 t2 =
-    let eq_cmp = Equation_set.compare t1.equations t2.equations in
-    if eq_cmp <> 0
-    then eq_cmp
-    else Option.compare Error.compare t1.error t2.error
+  let compare = compare
 
   let join t_old t_suc =
     match t_old, t_suc with
-    | { error = Some _; _ }, _ -> t_old
+    | { error = Some _; _ }, _ ->
+      (* If the last known value is an error do not update. *)
+      t_old
     | { equations; error = None }, { error = Some error; _ } ->
+      (* If the joined value is an error then pass through the error but keep
+         the old set of equations as it's more informative. *)
       { equations; error = Some error }
     | { equations = eq_old; error = None }, { equations = eq_suc; error = None }
       ->
+      (* If there are no errors combine the equation sets. *)
       { equations = Equation_set.union eq_old eq_suc; error = None }
 
   let less_equal t_new t_old =
     match t_new, t_old with
-    | _, { error = Some _; _ } -> true
-    | { error = Some _; _ }, { error = None; _ } -> false
+    | _, { error = Some _; _ } ->
+      (* If the already known value is an error don't update results in order to
+         terminate quickly. *)
+      true
+    | { error = Some _; _ }, { error = None; _ } ->
+      (* If the new value is an error, always propagate. *)
+      false
     | ( { error = None; equations = eq_set_new },
         { error = None; equations = eq_set_old } ) ->
+      (* When there are no errors don't propagate only if the set of equations
+         is exactly the same. There's no point in checking the inclusiveness of
+         the sets. *)
       Equation_set.equal eq_set_new eq_set_old
 
   let to_string _ = failwith "[to_string] unimplemented"
@@ -433,6 +468,7 @@ module Domain = struct
   let to_result t =
     match t.error with Some error -> Error error | None -> Ok t.equations
 
+  (** For equations coming from exceptional path remove the expected equations. *)
   let remove_exn_bucket equations =
     let phys_reg = Proc.loc_exn_bucket in
     let reg =
@@ -478,19 +514,24 @@ module Domain = struct
     let res =
       to_result t
       |> bind (fun equations ->
+             (* First remove the result equations. *)
              Equation_set.remove_result ~reg_res:reg_instr.Instruction.res
                ~loc_res:(extract_loc_arr loc_instr.res)
                equations
              |> wrap_error)
       |> bind (fun equations ->
+             (* Join the exceptional path equations. *)
              exn
              |> Result.map (fun exn_equations ->
                     Equation_set.union equations exn_equations))
       |> bind (fun equations ->
+             (* Verify the destroyed registers (including the exceptional
+                path). *)
              Equation_set.verify_destroyed_locations ~destroyed equations
              |> Result.map (fun () -> equations)
              |> wrap_error)
       |> Result.map (fun equations ->
+             (* Add all eqations for the arguments. *)
              Equation_set.add_argument ~reg_arg:reg_instr.Instruction.arg
                ~loc_arg:(extract_loc_arr loc_instr.arg)
                equations)
@@ -525,6 +566,11 @@ module Domain = struct
             equations;
         error = None
       }
+
+  let print ppf t =
+    (match t.error with None -> () | Some _ -> Format.fprintf ppf "ERROR ");
+    Equation_set.print ppf t.equations;
+    ()
 end
 
 module Transfer (Desc_val : Description_value) = struct
@@ -539,6 +585,8 @@ module Transfer (Desc_val : Description_value) = struct
       when Array.length instr.arg = 1
            && Array.length instr.res = 1
            && instr.arg.(0).loc = instr.res.(0).loc ->
+      (* This corresponds to a noop move where the source and target registers
+         have the same locations. *)
       assert (not (Cfg.can_raise_basic instr.desc));
       let instr_before =
         Hashtbl.find Desc_val.description.instructions instr.id
@@ -563,6 +611,9 @@ module Transfer (Desc_val : Description_value) = struct
         (Cfg_regalloc_utils.destroyed_at_terminator instr.desc
         |> extract_loc_arr)
 
+  (* This should remove the equations for the exception value, but we do that in
+     [Domain.append_equations] because there we have more information to give if
+     there's an error. *)
   let exception_ t = t
 end
 
@@ -583,12 +634,7 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
             | `Basic instr -> instr.id
             | `Terminator instr -> instr.id
           in
-          let res = Cfg_dataflow.Instr.Tbl.find res_instr id in
-          (match res.Domain.error with
-          | None -> ()
-          | Some _ -> Format.fprintf ppf "ERROR ");
-          Equation_set.print ppf res.Domain.equations;
-          ());
+          Cfg_dataflow.Instr.Tbl.find res_instr id |> Domain.print ppf);
         Cfg.print_instruction' ~print_reg:print_reg_as_loc;
         (fun ppf instr ->
           match instr with
@@ -603,12 +649,7 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
             let ti = Instruction.to_prealloc ~alloced:ti prev_ti in
             Cfg.print_terminator ppf ti) ]
     ~annotate_block_end:(fun ppf block ->
-      let res = Label.Tbl.find res_block block.start in
-      (match res.Domain.error with
-      | None -> ()
-      | Some _ -> Format.fprintf ppf "ERROR ");
-      Equation_set.print ppf res.Domain.equations;
-      ())
+      Label.Tbl.find res_block block.start |> Domain.print ppf)
     ?filename cfg msg;
   ()
 
@@ -627,15 +668,15 @@ let verify desc cfg =
       ~map:Check_backwards.Instr ()
     |> Result.get_ok
   in
-  let res_block =
-    Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-      ~map:Check_backwards.Block ()
-    |> Result.get_ok
-  in
-  if Cfg_regalloc_utils.regalloc_debug
+  (if Cfg_regalloc_utils.regalloc_debug
   then
+    let res_block =
+      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
+        ~map:Check_backwards.Block ()
+      |> Result.get_ok
+    in
     save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename:"annot.dot"
-      cfg "after_allocation_after_validation";
+      cfg "after_allocation_after_validation");
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
@@ -686,11 +727,6 @@ let verify desc cfg =
       Filename.temp_file
         (X86_proc.string_of_symbol "" (Cfg_with_layout.cfg cfg).fun_name ^ "_")
         ".dot"
-    in
-    let res_instr =
-      Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
-        ~map:Check_backwards.Instr ()
-      |> Result.get_ok
     in
     let res_block =
       Check_backwards.run (Cfg_with_layout.cfg cfg) ~init:Domain.bot
