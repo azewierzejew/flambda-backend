@@ -301,6 +301,8 @@ module Equation_set : sig
 
   val rename_reg : arg:Register.t -> res:Register.t -> t -> t
 
+  val is_empty : t -> bool
+
   val print : Format.formatter -> t -> unit
 end = struct
   module Equation = struct
@@ -692,14 +694,20 @@ module Error = struct
   module Source = struct
     type t =
       | At_instruction of Domain.Error.packed
-      | At_entrypoint of { message : string }
+      | At_entrypoint of
+          { message : string;
+            equations : Equation_set.t;
+            fun_args : Reg.t array
+          }
 
     let print (ppf : Format.formatter) (t : t) : unit =
       match t with
       | At_instruction error -> Domain.Error.print_packed ppf error
-      | At_entrypoint _ -> failwith "printing [In_final_result] unimplemented"
-
-    let _ = At_entrypoint { message = "" }
+      | At_entrypoint { message; equations; fun_args } ->
+        Format.fprintf ppf "Bad eqauations at entry point, reason: %s\n" message;
+        Format.fprintf ppf "Equations: %a\n" Equation_set.print equations;
+        Format.fprintf ppf "Function arguments: %a\n" Printmach.regs fun_args;
+        ()
   end
 
   type t =
@@ -710,7 +718,10 @@ module Error = struct
       cfg : Cfg_with_layout.t
     }
 
-  let print (ppf : Format.formatter)
+  let print (ppf : Format.formatter) ({ source; _ } : t) : unit =
+    Source.print ppf source
+
+  let dump (ppf : Format.formatter)
       ({ source; res_instr; res_block; desc; cfg } : t) : unit =
     Source.print ppf source;
     let filename =
@@ -724,6 +735,26 @@ module Error = struct
     Format.fprintf ppf "Dumped cfg into: %s\n" filename;
     ()
 end
+
+let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
+    (Cfg_with_layout.t, Error.Source.t) Result.t =
+  let fun_args = (Cfg_with_layout.cfg cfg).fun_args in
+  let bind f r = Result.bind r f in
+  Equation_set.remove_result
+    ~reg_res:(Array.map Register.create fun_args)
+    ~loc_res:(extract_loc_arr fun_args) equations
+  |> bind (fun equations ->
+         if Equation_set.is_empty equations
+         then Ok cfg
+         else (
+           Format.fprintf Format.str_formatter
+             "Equations present at entrypoint after removing parameter \
+              equations: [%a]"
+             Equation_set.print equations;
+           let message = Format.flush_str_formatter () in
+           Error message))
+  |> Result.map_error (fun message : Error.Source.t ->
+         At_entrypoint { message; equations; fun_args })
 
 let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
     (Cfg_with_layout.t, Error.t) Result.t =
@@ -755,9 +786,11 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
     in
     Cfg_dataflow.Instr.Tbl.find res_instr entry_id
   in
-  (* CR azewierzejew for azewierzejew: Verify the final set of equations. *)
   match result with
-  | { error = None; _ } -> Ok cfg
+  | { error = None; equations } ->
+    verify_entrypoint equations cfg
+    |> Result.map_error (fun source : Error.t ->
+           { source; res_instr; res_block; desc; cfg })
   | { error = Some error; _ } ->
     Error { source = At_instruction error; res_instr; res_block; desc; cfg }
 
@@ -765,5 +798,5 @@ let verify_exn desc cfg =
   match verify desc cfg with
   | Ok cfg -> cfg
   | Error error ->
-    Format.printf "%a%!" Error.print error;
+    Format.printf "%a%!" Error.dump error;
     exit 1
