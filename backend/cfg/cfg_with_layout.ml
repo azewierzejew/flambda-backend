@@ -89,7 +89,7 @@ let dump ppf t ~msg =
   in
   List.iter print_block t.layout
 
-let print_row f ppf = Format.fprintf ppf "@,@[<v 1><tr>%t@]@,</tr>" f
+let print_row r ppf = Format.dprintf "@,@[<v 1><tr>%t@]@,</tr>" r ppf
 
 type align =
   | Left
@@ -103,9 +103,9 @@ let print_align ppf align =
   Format.fprintf ppf "%s" s
 
 let print_cell ?(col_span = 1) ~align f ppf =
-  Format.fprintf ppf
+  Format.dprintf
     "@,@[<v 1><td align=\"%a\" balign=\"%a\" colspan=\"%d\">@,%t@]@,</td>"
-    print_align align print_align align col_span f
+    print_align align print_align align col_span f ppf
 
 let empty_cell ~col_span ppf =
   if col_span > 0 then print_cell ~align:Center (fun _ -> ()) ppf
@@ -115,6 +115,7 @@ let ( ++ ) (f1 : Format.formatter -> unit) (f2 : Format.formatter -> unit) ppf =
   f2 ppf
 
 let escape s =
+  (* CR azewierzejew for azewierzejew: Make this not abhorrently inefficient. *)
   let replace c t s = String.split_on_char c s |> String.concat t in
   let s = replace '&' "&amp;" s in
   let s = replace '<' "&lt;" s in
@@ -124,44 +125,27 @@ let escape s =
   s
 
 let with_escape_ppf f ppf =
-  (* let { Format.out_string; out_flush = _; out_newline; out_spaces; out_indent
-     } = Format.pp_get_formatter_out_functions ppf () in *)
-  let out_string s p n =
-    let s = String.sub s p n in
-    let s = escape s in
-    Format.fprintf ppf "%s" s
-  in
-  let out_flush () = () in
-  let out_newline () = Format.fprintf ppf "@," in
-  let out_spaces n = Format.fprintf ppf "%s" (String.make n ' ') in
-  let out_indent _ = () in
-  let esc_ppf =
-    Format.formatter_of_out_functions
-      { out_string; out_flush; out_newline; out_spaces; out_indent }
-  in
-  f esc_ppf;
-  Format.pp_print_flush esc_ppf ();
+  let buffer = Buffer.create 0 in
+  let buf_ppf = Format.formatter_of_buffer buffer in
+  f buf_ppf;
+  Format.pp_print_flush buf_ppf ();
+  Buffer.to_bytes buffer |> Bytes.to_string |> escape
+  |> Format.pp_print_text ppf;
   ()
 
 let print_dot ?(show_instr = true) ?(show_exn = true)
     ?(annotate_instr = [Cfg.print_instruction]) ?annotate_block
     ?annotate_block_end ?annotate_succ ppf t =
   let ppf =
-    let { Format.out_string;
-          out_flush;
-          out_newline;
-          out_spaces;
-          out_indent = _
-        } =
-      Format.pp_get_formatter_out_functions ppf ()
-    in
+    (* Change space indent into tabs because spaces are rendered by [dot]
+       command and tabs not. *)
+    let funcs = Format.pp_get_formatter_out_functions ppf () in
     let out_indent n =
       for _ = 1 to n do
-        out_string "\t" 0 1
+        funcs.out_string "\t" 0 1
       done
     in
-    Format.formatter_of_out_functions
-      { out_string; out_flush; out_newline; out_spaces; out_indent }
+    Format.formatter_of_out_functions { funcs with out_indent }
   in
   Format.fprintf ppf "strict digraph \"%s\" {\n" t.cfg.fun_name;
   let col_count = 1 + List.length annotate_instr in
@@ -191,36 +175,35 @@ let print_dot ?(show_instr = true) ?(show_exn = true)
        align=\"left\">%t"
       (name label)
       (print_row
-         (print_cell ~col_span:col_count ~align:Center (fun ppf ->
-              Format.fprintf ppf ".L%d:I%d:S%d%s%s%s" label show_index
-                (List.length block.body)
-                (if block.stack_offset > 0
-                then ":T" ^ string_of_int block.stack_offset
-                else "")
-                (if block.is_trap_handler then ":eh" else "")
-                (annotate_block label))));
+         (print_cell ~col_span:col_count ~align:Center
+            (Format.dprintf ".L%d:I%d:S%d%s%s%s" label show_index
+               (List.length block.body)
+               (if block.stack_offset > 0
+               then ":T" ^ string_of_int block.stack_offset
+               else "")
+               (if block.is_trap_handler then ":eh" else "")
+               (annotate_block label))));
     if show_instr
     then (
-      (* CR-someday gyorsh: Printing instruction using Printlinear doesn't work
-         because of special characters like { } that need to be escaped. Should
-         use sexp to print or implement a special printer. *)
       (print_row
-         (print_cell ~col_span:col_count ~align:Left (fun ppf ->
-              Format.fprintf ppf "preds:";
-              Label.Set.iter (Format.fprintf ppf " %d") block.predecessors)))
+         (print_cell ~col_span:col_count ~align:Left
+            (Format.dprintf "preds: %a"
+               (Format.pp_print_seq
+                  ~pp_sep:(fun ppf () -> Format.pp_print_string ppf ", ")
+                  Format.pp_print_int)
+               (Label.Set.to_seq block.predecessors))))
         ppf;
       List.iter
-        (fun i ->
+        (fun (i : _ Cfg.instruction) ->
           (print_row
-             (print_cell ~align:Right (fun ppf ->
-                  Format.fprintf ppf "%d" i.Cfg.id)
+             (print_cell ~align:Right (Format.dprintf "%d" i.id)
              ++ annotate_instr (`Basic i)))
             ppf)
         block.body;
-      let i = block.Cfg.terminator in
+      let ti = block.terminator in
       (print_row
-         (print_cell ~align:Right (fun ppf -> Format.fprintf ppf "%d" i.Cfg.id)
-         ++ annotate_instr (`Terminator i)))
+         (print_cell ~align:Right (Format.dprintf "%d" ti.id)
+         ++ annotate_instr (`Terminator ti)))
         ppf;
       match annotate_block_end with
       | None -> ()
