@@ -115,7 +115,7 @@ let entry_label =
 
 let () =
   let made_cfg =
-    ({ fun_args = [||];
+    ({ fun_args = [| Proc.phys_reg 0 |];
        blocks =
          [ { start = entry_label;
              body = [];
@@ -192,7 +192,7 @@ let check before after expected =
 
 let () =
   let cfg =
-    ({ fun_args = [||];
+    ({ fun_args = [| Proc.phys_reg 0 |];
        blocks =
          [ { start = entry_label;
              body = [];
