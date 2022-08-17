@@ -311,6 +311,9 @@ end = struct
     let compare (r1, l1) (r2, l2) =
       let r_cmp = Register.compare r1 r2 in
       if r_cmp <> 0 then r_cmp else Location.compare l1 l2
+
+    let print ppf (r, l) =
+      Format.fprintf ppf "%a=%a" Register.print r Location.print l
   end
 
   include Set.Make (Equation)
@@ -318,16 +321,15 @@ end = struct
   let compatibile_one ~reg ~loc t =
     let res = ref (Ok ()) in
     iter
-      (fun (eq_reg, eq_loc) ->
+      (fun ((eq_reg, eq_loc) as eq) ->
         let reg_eq = Register.equal eq_reg reg in
         let loc_eq = Location.equal eq_loc loc in
         if reg_eq <> loc_eq
         then (
           Format.fprintf Format.str_formatter
             "Unsatisfiable equations when removing result equations. Equation \
-             %a=[%a]. Result reg: %a, result location: %a"
-            Register.print eq_reg Location.print eq_loc Register.print reg
-            Location.print loc;
+             %a. Result reg: %a, result location: %a"
+            Equation.print eq Register.print reg Location.print loc;
           let message = Format.flush_str_formatter () in
           res := Error message))
       t;
@@ -384,9 +386,9 @@ end = struct
   let print ppf t =
     let first = ref true in
     iter
-      (fun (stamp, loc) ->
+      (fun eq ->
         if !first then first := false else Format.fprintf ppf " ";
-        Format.fprintf ppf "%a=[%a]" Register.print stamp Location.print loc)
+        Format.fprintf ppf "%a" Equation.print eq)
       t
 end
 
