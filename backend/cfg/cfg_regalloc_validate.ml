@@ -15,10 +15,12 @@ module Location = struct
 
     let word_size = 8
 
+    let byte_bits = 8
+
     let byte_offset_to_word_index offset =
       (* CR azewierzejew: This seems good enough but maybe we would want to
          consider unaligned offsets or 32-bit architecture. *)
-      if Sys.word_size <> word_size
+      if Sys.word_size <> word_size * byte_bits
       then
         Cfg_regalloc_utils.fatal
           "regalloc validation only supports 64 bit architecture, got word \
@@ -34,7 +36,7 @@ module Location = struct
     let word_index_to_byte_offset index =
       (* CR azewierzejew: This seems good enough but maybe we would want to
          consider unaligned offsets or 32-bit architecture. *)
-      if Sys.word_size <> word_size
+      if Sys.word_size <> word_size * byte_bits
       then
         Cfg_regalloc_utils.fatal
           "regalloc validation only supports 64 bit architecture, got word \
