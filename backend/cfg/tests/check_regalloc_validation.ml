@@ -1,36 +1,10 @@
 open Cfg_intf.S
 
-module Res = struct
-  type t =
-    | Exception_before of exn
-    | Exception_after of exn
-    | Ok
-    | Validation_changed_cfg of
-        { before : Cfg_with_layout.t;
-          after : Cfg_with_layout.t
-        }
-    | Error of Cfg_regalloc_validate.Error.t
-
-  let print (ppf : Format.formatter) (t : t) : unit =
-    match t with
-    | Exception_before exn ->
-      Format.fprintf ppf "Exception when creating description: %s"
-        (Printexc.to_string exn)
-    | Exception_after exn ->
-      Format.fprintf ppf "Exception while checking description: %s"
-        (Printexc.to_string exn)
-    | Ok -> Format.fprintf ppf "Validation passed"
-    | Validation_changed_cfg _ -> Format.fprintf ppf "Validation changed cfg"
-    | Error error ->
-      Format.fprintf ppf "Validation failed: %a"
-        Cfg_regalloc_validate.Error.print error
-end
-
 module Instruction = struct
   type 'a t =
-    { desc : 'a;
-      arg : Reg.t array;
-      res : Reg.t array;
+    { mutable desc : 'a;
+      mutable arg : Reg.t array;
+      mutable res : Reg.t array;
       id : int
     }
 
@@ -62,7 +36,7 @@ end
 module Block = struct
   type t =
     { start : Label.t;
-      body : Basic.t list;
+      mutable body : Basic.t list;
       terminator : Terminator.t;
       exn : Label.t option
     }
@@ -167,28 +141,74 @@ let () =
   assert (made_cfg = cfg);
   ()
 
-let check before after expected =
-  let res : Res.t =
-    try
-      let desc = Cfg_regalloc_validate.Description.create before in
-      try
-        match Cfg_regalloc_validate.verify desc after with
-        | Ok cfg ->
-          if cfg = after
-          then Ok
-          else Validation_changed_cfg { before = after; after = cfg }
-        | Error error -> Error error
-      with exn -> Exception_after exn
-    with exn -> Exception_before exn
+exception Break_test
+
+let check before after ~exp_std ~exp_err =
+  let with_wrap_ppf ppf f =
+    Format.pp_print_flush ppf ();
+    let buf = Buffer.create 0 in
+    let ppf_buf = Format.formatter_of_buffer buf in
+    let old_out_func = Format.pp_get_formatter_out_functions ppf () in
+    Format.pp_set_formatter_out_functions ppf
+      (Format.pp_get_formatter_out_functions ppf_buf ());
+    let res = f () in
+    Format.pp_print_flush ppf ();
+    Format.pp_set_formatter_out_functions ppf old_out_func;
+    res, buf |> Buffer.to_bytes |> Bytes.to_string |> String.trim
   in
-  if res = expected
-  then Printf.printf "Test successful\n%!"
-  else (
+  let ((), err_out), std_out =
+    with_wrap_ppf Format.std_formatter (fun () ->
+        with_wrap_ppf Format.err_formatter (fun () ->
+            try
+              let desc =
+                try Cfg_regalloc_validate.Description.create before
+                with Misc.Fatal_error ->
+                  Format.printf
+                    "fatal exception raised when creating description";
+                  raise Break_test
+              in
+              let res =
+                try Cfg_regalloc_validate.verify desc after
+                with Misc.Fatal_error ->
+                  Format.printf
+                    "fatal exception raised when validating description";
+                  raise Break_test
+              in
+              match res with
+              | Ok cfg ->
+                if cfg = after
+                then ()
+                else Format.printf "Validation changed cfg"
+              | Error error ->
+                Format.printf "Validation failed: %a"
+                  Cfg_regalloc_validate.Error.print error
+            with Break_test -> ()))
+  in
+  if exp_std = std_out && exp_err = err_out
+  then Format.printf "Test successful\n%!"
+  else
+    let print_as_text msg text =
+      Format.printf "@?@[<h 2>%s:" msg;
+      if String.length text > 0 then Format.force_newline ();
+      Format.pp_print_text Format.std_formatter text;
+      Format.printf "@]\n";
+      ()
+    in
     Format.printf "Test failed\n";
-    Format.printf "Expected: %a\n" Res.print expected;
-    Format.printf "Got: %a\n" Res.print res;
+    print_as_text "Expected std" exp_std;
+    print_as_text "Got std" std_out;
+    print_as_text "Expected err" exp_err;
+    print_as_text "Got err" err_out;
+    Format.printf "Std as string literal:\n%S\n" std_out;
+    Format.printf "Err as string literal:\n%S\n" err_out;
     Format.print_flush ();
-    exit 1)
+    exit 1
+
+let ( .&() ) (cfg : Cfg_desc.t) (label : Label.t) : Block.t =
+  List.find (fun (block : Block.t) -> block.start = label) cfg.blocks
+
+let ( .!() ) (block : Block.t) (index : int) : Basic.t =
+  List.nth block.body index
 
 let () =
   let cfg =
@@ -209,5 +229,156 @@ let () =
       : Cfg_desc.t)
     |> Cfg_desc.make
   in
-  check cfg cfg Ok;
-  ()
+  check cfg cfg ~exp_std:"" ~exp_err:""
+
+let () =
+  let cfg =
+    ({ fun_args = [||];
+       blocks =
+         [ { start = entry_label;
+             body = [{ id = 1; desc = Prologue; arg = [||]; res = [||] }];
+             exn = None;
+             terminator =
+               { id = 1; desc = Return; arg = [| Reg.create Int |]; res = [||] }
+           } ];
+       fun_contains_calls = false
+     }
+      : Cfg_desc.t)
+    |> Cfg_desc.make
+  in
+  check cfg cfg ~exp_std:"fatal exception raised when creating description"
+    ~exp_err:
+      ">> Fatal error: Duplicate instruction no. 1 while creating \
+       pre-allocation description"
+
+let () =
+  let cfg =
+    ({ fun_args = [||];
+       blocks =
+         [ { start = entry_label;
+             body = [{ id = 1; desc = Op Spill; arg = [||]; res = [||] }];
+             exn = None;
+             terminator =
+               { id = 2; desc = Return; arg = [| Reg.create Int |]; res = [||] }
+           } ];
+       fun_contains_calls = false
+     }
+      : Cfg_desc.t)
+    |> Cfg_desc.make
+  in
+  check cfg cfg ~exp_std:"fatal exception raised when creating description"
+    ~exp_err:
+      ">> Fatal error: Instruction no. 1 is specific to the regalloc phase \
+       while creating pre-allocation description"
+
+let () =
+  let cfg =
+    ({ fun_args = [||];
+       blocks =
+         [ { start = entry_label;
+             body = [{ id = 1; desc = Op Reload; arg = [||]; res = [||] }];
+             exn = None;
+             terminator =
+               { id = 2; desc = Return; arg = [| Reg.create Int |]; res = [||] }
+           } ];
+       fun_contains_calls = false
+     }
+      : Cfg_desc.t)
+    |> Cfg_desc.make
+  in
+  check cfg cfg ~exp_std:"fatal exception raised when creating description"
+    ~exp_err:
+      ">> Fatal error: Instruction no. 1 is specific to the regalloc phase \
+       while creating pre-allocation description"
+
+let call_label = entry_label + 1
+
+let return_label = entry_label + 2
+
+let base_templ =
+  let make_id =
+    let last_id = ref 2 in
+    fun () ->
+      last_id := !last_id + 1;
+      !last_id
+  in
+  let res_regs = Proc.loc_results [| Int |] in
+  ({ fun_args = [||];
+     blocks =
+       [ { start = entry_label;
+           body = [{ id = make_id (); desc = Prologue; arg = [||]; res = [||] }];
+           exn = None;
+           terminator =
+             { id = make_id ();
+               desc = Always call_label;
+               arg = [||];
+               res = [||]
+             }
+         };
+         { start = call_label;
+           body =
+             [ { id = make_id ();
+                 desc = Call (F Indirect);
+                 arg = [||];
+                 res = [||]
+               } ];
+           exn = None;
+           terminator =
+             { id = make_id ();
+               desc = Always return_label;
+               arg = [||];
+               res = [||]
+             }
+         };
+         { start = return_label;
+           body = [];
+           exn = None;
+           terminator =
+             { id = make_id (); desc = Return; arg = res_regs; res = [||] }
+         } ];
+     fun_contains_calls = true
+   }
+    : Cfg_desc.t)
+
+let () =
+  let templ =
+    ({ fun_args = [||];
+       blocks =
+         [ { start = entry_label;
+             body =
+               [{ id = 1; desc = Call (F Indirect); arg = [||]; res = [||] }];
+             exn = None;
+             terminator =
+               { id = 2; desc = Return; arg = [| Reg.create Int |]; res = [||] }
+           } ];
+       fun_contains_calls = true
+     }
+      : Cfg_desc.t)
+  in
+  let cfg1 = Cfg_desc.make templ in
+  templ.&(entry_label).!(0).arg <- [| Reg.create Int |];
+  let cfg2 = Cfg_desc.make templ in
+  check cfg1 cfg2 ~exp_std:"fatal exception raised when validating description"
+    ~exp_err:
+      ">> Fatal error: The instruction's no. 1 argument count has changed. \
+       Now: 1. After: 0."
+
+let () =
+  let cfg =
+    ({ fun_args = [||];
+       blocks =
+         [ { start = entry_label;
+             body = [];
+             exn = None;
+             terminator =
+               { id = 1; desc = Return; arg = [| Reg.create Int |]; res = [||] }
+           } ];
+       fun_contains_calls = false
+     }
+      : Cfg_desc.t)
+    |> Cfg_desc.make
+  in
+  check cfg cfg ~exp_std:"fatal exception raised when validating description"
+    ~exp_err:
+      ">> Fatal error: The instruction's no. 1 argument is still unknown after \
+       allocation"

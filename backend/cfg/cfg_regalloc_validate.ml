@@ -164,18 +164,20 @@ module Description = struct
   let make_terminator_helper t f instr =
     f ~is_regalloc_specific:false t.terminators instr
 
-  let add_instr ~is_regalloc_specific instructions instr =
+  let add_instr ~seen_ids ~is_regalloc_specific instructions instr =
     let id = instr.id in
+    if Hashtbl.find_opt seen_ids id |> Option.is_some
+    then
+      Cfg_regalloc_utils.fatal
+        "Duplicate instruction no. %d while creating pre-allocation description"
+        id;
+    Hashtbl.add seen_ids id ();
     if is_regalloc_specific
     then
       Cfg_regalloc_utils.fatal
-        "Instruction %d is specific to the regalloc phase while creating \
+        "Instruction no. %d is specific to the regalloc phase while creating \
          pre-allocation description"
         id;
-    if Hashtbl.find_opt instructions id |> Option.is_some
-    then
-      Cfg_regalloc_utils.fatal
-        "Duplicate instr id %d while creating pre-allocation description" id;
     Hashtbl.add instructions id
       { Instruction.desc = instr.desc;
         arg = Array.map Register.create instr.arg;
@@ -187,12 +189,13 @@ module Description = struct
     then
       Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
         "before_allocation_before_validation";
+    let seen_ids = Hashtbl.create 0 in
     let t =
       { instructions = Hashtbl.create 0; terminators = Hashtbl.create 0 }
     in
     Cfg_with_layout.iter_instructions cfg
-      ~instruction:(make_instruction_helper t add_instr)
-      ~terminator:(make_terminator_helper t add_instr);
+      ~instruction:(make_instruction_helper t (add_instr ~seen_ids))
+      ~terminator:(make_terminator_helper t (add_instr ~seen_ids));
     t
 
   let verify_reg_array ~id ~name ~reg_arr ~loc_arr =
