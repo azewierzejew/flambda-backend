@@ -185,6 +185,7 @@ module Description = struct
       }
 
   let create cfg =
+    Cfg_regalloc_utils.precondition cfg;
     if Cfg_regalloc_utils.regalloc_debug
     then
       Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
@@ -202,8 +203,8 @@ module Description = struct
     if Array.length reg_arr <> Array.length loc_arr
     then
       Cfg_regalloc_utils.fatal
-        "The instruction's no. %d %s count has changed. Now: %d. After: %d." id
-        name (Array.length loc_arr) (Array.length reg_arr);
+        "The instruction's no. %d %s count has changed. Before: %d. Now: %d." id
+        name (Array.length reg_arr) (Array.length loc_arr);
     Array.iter2
       (fun reg_desc loc_reg ->
         match reg_desc.Register.loc, Location.of_reg loc_reg with
@@ -253,6 +254,7 @@ module Description = struct
         "Register allocation added non-regalloc specific instruction no. %d" id
 
   let verify t cfg =
+    Cfg_regalloc_utils.postcondition cfg;
     let seen_ids =
       Hashtbl.create
         (Hashtbl.length t.instructions + Hashtbl.length t.terminators)
