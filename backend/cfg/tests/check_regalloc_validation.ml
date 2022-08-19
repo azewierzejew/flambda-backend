@@ -368,9 +368,6 @@ let base_templ () : Cfg_desc.t * (unit -> int) =
 
 let check name f ~exp_std ~exp_err =
   let before, after = f () in
-  Cfg_with_layout.save_as_dot ~filename:"/tmp/before.dot" before
-    "test-cfg-before";
-  Cfg_with_layout.save_as_dot ~filename:"/tmp/after.dot" after "test-cfg-after";
   let with_wrap_ppf ppf f =
     Format.pp_print_flush ppf ();
     let buf = Buffer.create 0 in
@@ -428,6 +425,12 @@ let check name f ~exp_std ~exp_err =
     print_as_text "Got err" err_out;
     Format.printf "Std as string literal:\n%S\n" std_out;
     Format.printf "Err as string literal:\n%S\n" err_out;
+    Format.print_flush ();
+    Cfg_with_layout.save_as_dot ~filename:"/tmp/before.dot" before
+      "test-cfg-before";
+    Cfg_with_layout.save_as_dot ~filename:"/tmp/after.dot" after
+      "test-cfg-after";
+    Format.printf "The failing cfgs were put in /tmp/[before|after].dot\n";
     Format.print_flush ();
     exit 1
 
