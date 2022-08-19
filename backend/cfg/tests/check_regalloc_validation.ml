@@ -426,6 +426,7 @@ let check name f ~exp_std ~exp_err =
     Format.printf "Std as string literal:\n%S\n" std_out;
     Format.printf "Err as string literal:\n%S\n" err_out;
     Format.print_flush ();
+    (* CR azewierzejew for azewierzejew: Fix how the files are saved. *)
     Cfg_with_layout.save_as_dot ~filename:"/tmp/before.dot" before
       "test-cfg-before";
     Cfg_with_layout.save_as_dot ~filename:"/tmp/after.dot" after
@@ -646,3 +647,200 @@ let () =
     ~exp_std:"fatal exception raised when validating description"
     ~exp_err:
       ">> Fatal error: Instruction no. 8 was deleted by register allocator"
+
+let make_loop n =
+  let make_id =
+    let last_id = ref 2 in
+    fun () ->
+      last_id := !last_id + 1;
+      !last_id
+  in
+  let make_locs regs f =
+    let locs = f (Array.map (fun (r : Reg.t) -> r.typ) regs) in
+
+    let regs =
+      Array.map2
+        (fun (reg : Reg.t) (loc : Reg.t) -> { reg with loc = loc.loc })
+        regs locs
+    in
+    regs, locs
+  in
+  let loop_label = call_label in
+  let stack_loc =
+    let locs =
+      Array.init (n + 1) (fun i -> Reg.at_location Int (Stack (Local i)))
+    in
+    fun i -> locs.(i)
+  in
+  let int_arg1 = int.(0) in
+  let int_arg2 = int.(1) in
+  let int_arg3 = int.(2) in
+  let args, arg_locs =
+    make_locs [| int_arg1; int_arg2; int_arg3 |] Proc.loc_parameters
+  in
+  let int_arg1 = args.(0) in
+  let int_arg2 = args.(1) in
+  let int_arg3 = args.(2) in
+  let extra_regs =
+    Array.init n (fun _ -> { (Reg.create Int) with loc = int_arg3.loc })
+  in
+  let results, result_locs = make_locs [| int_arg1 |] Proc.loc_results in
+  let make_moves src dst =
+    Array.map2
+      (fun src dst : Basic.t ->
+        { id = make_id (); desc = Op Move; arg = [| src |]; res = [| dst |] })
+      src dst
+    |> Array.to_list
+  in
+  let templ : Cfg_desc.t =
+    { fun_args = arg_locs;
+      blocks =
+        [ { start = entry_label;
+            body = [{ id = make_id (); desc = Prologue; arg = [||]; res = [||] }];
+            exn = None;
+            terminator =
+              { id = make_id ();
+                desc = Always move_param_label;
+                arg = [||];
+                res = [||]
+              }
+          };
+          { start = move_param_label;
+            body =
+              make_moves arg_locs args
+              (* Move [arg3] to all [extra_regs]. *)
+              @ List.init n (fun n ->
+                    { Instruction.id = make_id ();
+                      desc = Op Move;
+                      arg = [| int_arg3 |];
+                      res = [| extra_regs.(n) |]
+                    })
+              (* Spill [arg3] to locations [0;n-1] *)
+              @ List.init n (fun n ->
+                    { Instruction.id = make_id ();
+                      desc = Op Spill;
+                      arg = [| int_arg3 |];
+                      res = [| stack_loc n |]
+                    })
+              (* Spill [arg2] to location n. If we spilled [arg3] the code would
+                 be correct. *)
+              @ [ { Instruction.id = make_id ();
+                    desc = Op Spill;
+                    arg = [| int_arg2 |];
+                    res = [| stack_loc n |]
+                  } ];
+            exn = None;
+            terminator =
+              { id = make_id ();
+                desc = Always loop_label;
+                arg = [||];
+                res = [||]
+              }
+          };
+          { start = loop_label;
+            body =
+              (* Rotate all locations by one index. *)
+              List.init n (fun n ->
+                  (* Move loc i+1 to i. *)
+                  [ { Instruction.id = make_id ();
+                      desc = Op Reload;
+                      arg = [| stack_loc (n + 1) |];
+                      res = [| int_arg3 |]
+                    };
+                    { Instruction.id = make_id ();
+                      desc = Op Spill;
+                      arg = [| int_arg3 |];
+                      res = [| stack_loc n |]
+                    } ])
+              |> List.concat;
+            exn = None;
+            terminator =
+              { id = make_id ();
+                desc =
+                  Int_test
+                    { lt = loop_label;
+                      eq = move_tmp_res_label;
+                      gt = move_tmp_res_label;
+                      is_signed = false;
+                      imm = None
+                    };
+                arg = [||];
+                res = [||]
+              }
+          };
+          { start = move_tmp_res_label;
+            body =
+              (* Require that all extra regs are in location 0. This will break
+                 after loop is run at least [n] times because then the spilled
+                 [arg2] in location n will rotate over to location 0. For that
+                 reason the fix-point algorithm will also have to run n
+                 times. *)
+              [ { Instruction.id = make_id ();
+                  desc = Op (Const_int (Nativeint.of_int 1));
+                  arg = [||];
+                  res = [| int_arg1 |]
+                } ]
+              @ (List.init n (fun n ->
+                     (* Load extra reg from location 0.*)
+                     [ { Instruction.id = make_id ();
+                         desc = Op Reload;
+                         arg = [| stack_loc 0 |];
+                         res = [| extra_regs.(n) |]
+                       };
+                       (* Add the extra reg to accumalated result. *)
+                       { Instruction.id = make_id ();
+                         desc = Op (Intop Iadd);
+                         arg = [| int_arg1; extra_regs.(n) |];
+                         res = [| int_arg1 |]
+                       } ])
+                |> List.concat);
+            exn = None;
+            terminator =
+              { id = make_id ();
+                desc = Always return_label;
+                arg = [||];
+                res = [||]
+              }
+          };
+          { start = return_label;
+            body =
+              make_moves [| int_arg1 |] results
+              @ make_moves results result_locs
+              @ [ { id = make_id ();
+                    desc = Reloadretaddr;
+                    arg = [||];
+                    res = [||]
+                  } ];
+            exn = None;
+            terminator =
+              { id = make_id (); desc = Return; arg = result_locs; res = [||] }
+          } ];
+      fun_contains_calls = true
+    }
+  in
+  Cfg_desc.make_pre templ, Cfg_desc.make_post templ
+
+let test_loop n =
+  assert (n >= 2);
+  let start_time = Sys.time () in
+  check
+    (Printf.sprintf "Check loop with %d locations" n)
+    (fun () -> make_loop n)
+    ~exp_std:
+      "Validation failed: Bad eqauations at entry point, reason: Unsatisfiable \
+       equations when removing result equations. Equation R/2[%rdi]=%rbx. \
+       Result reg: R/1[%rbx], result location: %rbx\n\
+       Equations: R/2[%rdi]=%rbx R/2[%rdi]=%rdi\n\
+       Function arguments: R/0[%rax] R/1[%rbx] R/2[%rdi]"
+    ~exp_err:"";
+  let end_time = Sys.time () in
+  Format.printf "  Time of loop test: %fs\n" (end_time -. start_time);
+  ()
+
+let () = test_loop 2
+
+let () = test_loop 10
+
+let () = test_loop 25
+
+let () = test_loop 50

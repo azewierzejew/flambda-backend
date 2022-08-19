@@ -452,7 +452,6 @@ module Domain = struct
       in
       Format.fprintf ppf "Check failed in instr %d:\n" id;
       Format.fprintf ppf "pre: %a\n" Cfg.print_instruction reg_instr;
-
       Format.fprintf ppf "post: %a\n"
         (Cfg.print_instruction' ~print_reg:print_reg_as_loc)
         loc_instr;
