@@ -377,7 +377,7 @@ let can_raise_operation : operation -> bool = function
   | Floatofint -> false
   | Intoffloat -> false
   | Probe _ -> true
-  | Probe_is_enabled _ -> true
+  | Probe_is_enabled _ -> false
   | Specific op -> Arch.operation_can_raise op
   | Opaque -> false
   | Name_for_debugger _ -> false
