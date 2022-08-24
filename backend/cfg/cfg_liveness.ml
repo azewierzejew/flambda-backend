@@ -55,8 +55,17 @@ struct
     { before; across }
 
   let basic : domain -> exn:domain -> Cfg.basic Cfg.instruction -> domain =
-   fun domain ~exn instr ->
-    instruction ~can_raise:(Cfg.can_raise_basic instr.desc) ~exn domain instr
+   fun ({ before; across = _ } as domain) ~exn instr ->
+    if Cfg.is_pure_basic instr.desc
+       && Reg.disjoint_set_array before instr.res
+       && (not (Proc.regs_are_volatile instr.arg))
+       && not (Proc.regs_are_volatile instr.res)
+    then
+      (* If the operation is without side-effects and the result is unused then
+         the arguments also aren't necessary. *)
+      { before; across = before }
+    else
+      instruction ~can_raise:(Cfg.can_raise_basic instr.desc) ~exn domain instr
 
   let terminator :
       domain -> exn:domain -> Cfg.terminator Cfg.instruction -> domain =

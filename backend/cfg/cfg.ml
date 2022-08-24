@@ -436,9 +436,9 @@ let is_pure_basic : basic -> bool = function
   | Op op -> is_pure_operation op
   | Call _ -> false
   | Reloadretaddr -> true
-  | Pushtrap _ -> true
-  | Poptrap -> true
-  | Prologue -> true
+  | Pushtrap _ -> false
+  | Poptrap -> false
+  | Prologue -> false
 
 let is_noop_move instr =
   match instr.desc with
