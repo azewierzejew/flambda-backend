@@ -250,19 +250,6 @@ let dump_basic ppf (basic : basic) =
   | Poptrap -> fprintf ppf "Poptrap"
   | Prologue -> fprintf ppf "Prologue"
 
-let dump_func_call ppf = function
-  | Indirect -> Format.fprintf ppf "indirect"
-  | Direct { func_symbol : string; _ } ->
-    Format.fprintf ppf "direct %s" func_symbol
-
-let dump_prim_call ppf = function
-  | External { func_symbol : string; _ } ->
-    Format.fprintf ppf "external %s" func_symbol
-  | Alloc { bytes : int; _ } -> Format.fprintf ppf "alloc %d" bytes
-  | Checkbound _ -> Format.fprintf ppf "checkbound"
-  | Probe { name; handler_code_sym } ->
-    Format.fprintf ppf "probe %s %s" name handler_code_sym
-
 let dump_terminator' ?(print_reg = Printmach.reg) ?(print_res = fun _ -> ())
     ?(args = [||])
     ?(specific_can_raise = fun ppf _ -> Format.fprintf ppf "specific_can_raise")
@@ -282,6 +269,7 @@ let dump_terminator' ?(print_reg = Printmach.reg) ?(print_res = fun _ -> ())
     then ()
     else Format.fprintf ppf " %a" (Printmach.regs' ~print_reg) args
   in
+  let dump_mach_op ppf op = Printmach.operation' ~print_reg op args ppf [||] in
   let open Format in
   match terminator with
   | Never -> fprintf ppf "deadend"
@@ -318,15 +306,31 @@ let dump_terminator' ?(print_reg = Printmach.reg) ?(print_res = fun _ -> ())
     fprintf ppf "Call_no_return %s%a" func_symbol print_args args
   | Return -> fprintf ppf "Return%a" print_args args
   | Raise _ -> fprintf ppf "Raise%a" print_args args
-  | Tailcall_self _ -> fprintf ppf "Tailcall self%a" print_args args
+  | Tailcall_self { destination } ->
+    dump_mach_op ppf
+      (Mach.Itailcall_imm { func = Printf.sprintf "self(%d)" destination })
   | Tailcall call ->
-    fprintf ppf "Tailcall(%a)%a" dump_func_call call print_args args
+    dump_mach_op ppf
+      (match call with
+      | Indirect -> Mach.Itailcall_ind
+      | Direct { func_symbol = func } -> Mach.Itailcall_imm { func })
   | Call { call; label_after } ->
-    Format.fprintf ppf "%t%a%a%sgoto %d" print_res dump_func_call call
-      print_args args sep label_after
+    Format.fprintf ppf "%t%a%sgoto %d" print_res dump_mach_op
+      (match call with
+      | Indirect -> Mach.Icall_ind
+      | Direct { func_symbol = func } -> Mach.Icall_imm { func })
+      sep label_after
   | Prim { prim; label_after } ->
-    Format.fprintf ppf "%t%a%a%sgoto %d" print_res dump_prim_call prim
-      print_args args sep label_after
+    Format.fprintf ppf "%t%a%sgoto %d" print_res dump_mach_op
+      (match prim with
+      | External { func_symbol = func; ty_res; ty_args; alloc } ->
+        Mach.Iextcall { func; ty_res; ty_args; returns = true; alloc }
+      | Alloc { bytes; dbginfo; mode } -> Mach.Ialloc { bytes; dbginfo; mode }
+      | Checkbound { immediate = Some x } -> Mach.Iintop_imm (Icheckbound, x)
+      | Checkbound { immediate = None } -> Mach.Iintop Icheckbound
+      | Probe { name; handler_code_sym } ->
+        Mach.Iprobe { name; handler_code_sym })
+      sep label_after
   | Specific_can_raise { op; label_after } ->
     Format.fprintf ppf "%a%sgoto %d" specific_can_raise op sep label_after
 
