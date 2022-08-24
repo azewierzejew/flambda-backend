@@ -34,10 +34,6 @@ module S = struct
     | Indirect
     | Direct of { func_symbol : string }
 
-  type tail_call_operation =
-    | Self of { destination : Label.t }
-    | Func of func_call_operation
-
   type external_call_operation =
     { func_symbol : string;
       alloc : bool;
@@ -53,6 +49,10 @@ module S = struct
           mode : Lambda.alloc_mode
         }
     | Checkbound of { immediate : int option }
+    | Probe of
+        { name : string;
+          handler_code_sym : string
+        }
 
   type operation =
     | Move
@@ -75,10 +75,6 @@ module S = struct
     | Compf of Mach.float_comparison (* CR gyorsh: can merge with float_test? *)
     | Floatofint
     | Intoffloat
-    | Probe of
-        { name : string;
-          handler_code_sym : string
-        }
     | Probe_is_enabled of { name : string }
     | Opaque
     | Begin_region
@@ -90,10 +86,6 @@ module S = struct
           provenance : unit option;
           is_assignment : bool
         }
-
-  type call_operation =
-    | P of prim_call_operation
-    | F of func_call_operation
 
   type bool_test =
     { ifso : Label.t;  (** if test is true goto [ifso] label *)
@@ -144,9 +136,9 @@ module S = struct
       mutable irc_work_list : irc_work_list
     }
 
+  (* [basic] instruction cannot raise *)
   type basic =
     | Op of operation
-    | Call of call_operation
     | Reloadretaddr
     | Pushtrap of { lbl_handler : Label.t }
     | Poptrap
@@ -174,8 +166,23 @@ module S = struct
     | Switch of Label.t array
     | Return
     | Raise of Lambda.raise_kind
-    | Tailcall of tail_call_operation
+    | Tailcall_self of { destination : Label.t }
+    | Tailcall of func_call_operation
     | Call_no_return of external_call_operation
+    | Call of
+        { call : func_call_operation;
+          (* CR-someday azewierzejw: Maybe we would want to extract the pattern
+             [{x; label_after}]. *)
+          label_after : Label.t
+        }
+    | Prim of
+        { prim : prim_call_operation;
+          label_after : Label.t
+        }
+    | Specific_can_raise of
+        { op : Arch.specific_operation;
+          label_after : Label.t
+        }
 end
 
 (* CR-someday gyorsh: Switch can be translated to Branch. *)
