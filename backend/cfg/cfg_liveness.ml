@@ -45,58 +45,31 @@ struct
       across : Reg.Set.t
     }
 
+  let instruction { before; across = _ } ~can_raise ~exn
+      (instr : _ Cfg.instruction) =
+    let across = Reg.diff_set_array before instr.res in
+    let across =
+      if can_raise then Reg.Set.union across exn.before else across
+    in
+    let before = Reg.add_set_array across instr.arg in
+    { before; across }
+
   let basic : domain -> exn:domain -> Cfg.basic Cfg.instruction -> domain =
-   fun { before; across = _ } ~exn instr ->
-    match instr.desc with
-    | Op _ | Call _ ->
-      if Cfg.is_pure_basic instr.desc
-         && Reg.disjoint_set_array before instr.res
-         && (not (Proc.regs_are_volatile instr.arg))
-         && not (Proc.regs_are_volatile instr.res)
-      then { before; across = before }
-      else
-        let across = Reg.diff_set_array before instr.res in
-        let across =
-          if Cfg.can_raise_basic instr.desc && instr.stack_offset > 0
-          then Reg.Set.union across exn.before
-          else across
-        in
-        let before = Reg.add_set_array across instr.arg in
-        { before; across }
-    | Reloadretaddr ->
-      { before = Reg.diff_set_array before Proc.destroyed_at_reloadretaddr;
-        across = Reg.Set.empty
-      }
-    | Pushtrap _ -> { before; across = before }
-    | Poptrap -> { before; across = before }
-    | Prologue -> { before; across = before }
+   fun ({ before; across = _ } as domain) ~exn instr ->
+    if Cfg.is_pure_basic instr.desc
+       && Reg.disjoint_set_array before instr.res
+       && (not (Proc.regs_are_volatile instr.arg))
+       && not (Proc.regs_are_volatile instr.res)
+    then { before; across = before }
+    else
+      instruction ~can_raise:(Cfg.can_raise_basic instr.desc) ~exn domain instr
 
   let terminator :
       domain -> exn:domain -> Cfg.terminator Cfg.instruction -> domain =
-   fun { before; across = _ } ~exn instr ->
-    match instr.desc with
-    | Never -> assert false
-    | Always _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Parity_test _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Truth_test _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Float_test _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Int_test _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Switch _ ->
-      { before = Reg.add_set_array before instr.arg; across = before }
-    | Return -> { before = Reg.set_of_array instr.arg; across = Reg.Set.empty }
-    | Tailcall (Self _) ->
-      { before = Reg.set_of_array instr.arg; across = Reg.Set.empty }
-    | Raise _ ->
-      { before = Reg.add_set_array exn.before instr.arg; across = exn.before }
-    | Tailcall (Func _) ->
-      { before = Reg.set_of_array instr.arg; across = Reg.Set.empty }
-    | Call_no_return _ ->
-      { before = Reg.add_set_array exn.before instr.arg; across = exn.before }
+   fun domain ~exn instr ->
+    instruction
+      ~can_raise:(Cfg.can_raise_terminator instr.desc)
+      ~exn domain instr
 
   let exception_ : domain -> domain =
    fun { before; across = _ } ->
