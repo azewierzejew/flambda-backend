@@ -61,9 +61,23 @@ struct
   let terminator :
       domain -> exn:domain -> Cfg.terminator Cfg.instruction -> domain =
    fun domain ~exn instr ->
-    instruction
-      ~can_raise:(Cfg.can_raise_terminator instr.desc)
-      ~exn domain instr
+    match instr.desc with
+    | Never -> assert false
+    | Tailcall (Self _) ->
+      (* CR-someday azewierzejew: If the stamps for the tail call DomainState
+         argument and parameter were the same and Tailcall (Self _) had
+         [instr.arg = instr.reg] (either by removing the args or adding results
+         because currently there is nonempty array in args but empty in res)
+         then it would behave exactly the same as every other instruction. *)
+      (* We have to handle this as a special case because the registers for a
+         given DomainState argument and parameter pair have different stamps. *)
+      instruction
+        ~can_raise:(Cfg.can_raise_terminator instr.desc)
+        ~exn Domain.bot instr
+    | _ ->
+      instruction
+        ~can_raise:(Cfg.can_raise_terminator instr.desc)
+        ~exn domain instr
 
   let exception_ : domain -> domain =
    fun { before; across = _ } ->
