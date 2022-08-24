@@ -593,10 +593,10 @@ let rec create_blocks (t : t) (i : L.instruction) (block : C.basic_block)
         (Name_for_debugger { ident; which_parameter; provenance; is_assignment })
     | Ispecific op ->
       if Arch.operation_can_raise op
-      then basic (Specific op)
-      else
+      then
         terminator_fallthrough (fun label_after ->
-            Specific_can_raise { op; label_after }))
+            Specific_can_raise { op; label_after })
+      else basic (Specific op))
 
 let run (f : Linear.fundecl) ~preserve_orig_labels =
   let t =

@@ -194,7 +194,12 @@ let basic_or_terminator_of_operation :
   | Idivf -> Basic (Op Divf)
   | Ifloatofint -> Basic (Op Floatofint)
   | Iintoffloat -> Basic (Op Intoffloat)
-  | Ispecific op -> Basic (Op (Specific op))
+  | Ispecific op ->
+    if Arch.operation_can_raise op
+    then
+      With_next_label
+        (fun label_after -> Specific_can_raise { op; label_after })
+    else Basic (Op (Specific op))
   | Iopaque -> Basic (Op Opaque)
   | Iname_for_debugger _ ->
     Misc.fatal_error
