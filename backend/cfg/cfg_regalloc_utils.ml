@@ -61,8 +61,6 @@ let destroyed_at_basic : Cfg.basic -> Reg.t array =
       | Compf x -> Iop (Icompf x)
       | Floatofint -> Iop Ifloatofint
       | Intoffloat -> Iop Iintoffloat
-      | Probe { name; handler_code_sym } ->
-        Iop (Iprobe { name; handler_code_sym })
       | Probe_is_enabled { name } -> Iop (Iprobe_is_enabled { name })
       | Opaque -> Iop Iopaque
       | Begin_region -> Iop Ibeginregion
@@ -73,22 +71,6 @@ let destroyed_at_basic : Cfg.basic -> Reg.t array =
         Iop
           (Iname_for_debugger
              { ident; which_parameter; provenance; is_assignment }))
-  | Call c -> (
-    match c with
-    | P (External { func_symbol; alloc; ty_res; ty_args }) ->
-      let func = func_symbol in
-      let returns = true in
-      at_oper (Iop (Iextcall { func; ty_res; ty_args; alloc; returns }))
-    | P (Alloc { bytes; dbginfo; mode }) ->
-      at_oper (Iop (Ialloc { bytes; dbginfo; mode }))
-    | P (Checkbound { immediate }) -> (
-      match immediate with
-      | None -> at_oper (Iop (Iintop Icheckbound))
-      | Some x -> at_oper (Iop (Iintop_imm (Icheckbound, x))))
-    | F Indirect -> at_oper (Iop Icall_ind)
-    | F (Direct { func_symbol }) ->
-      let func = func_symbol in
-      at_oper (Iop (Icall_imm { func })))
   | Reloadretaddr -> Proc.destroyed_at_reloadretaddr
   | Pushtrap _ -> Proc.destroyed_at_pushtrap
   | Poptrap -> default
@@ -108,22 +90,43 @@ let destroyed_at_terminator : Cfg.terminator -> Reg.t array =
   | Switch _ -> at_oper (Mach.Iswitch ([||], [||]))
   | Return -> at_oper (Mach.Ireturn [])
   | Raise x -> at_oper (Mach.Iraise x)
+  | Tailcall_self { destination } ->
+    let func =
+      ignore destination;
+      "dummy"
+    in
+    at_oper (Mach.Iop (Itailcall_imm { func }))
   | Tailcall x -> (
     match x with
-    | Self { destination } ->
-      let func =
-        ignore destination;
-        "dummy"
-      in
-      at_oper (Mach.Iop (Itailcall_imm { func }))
-    | Func Indirect -> at_oper (Mach.Iop Itailcall_ind)
-    | Func (Direct { func_symbol }) ->
+    | Indirect -> at_oper (Mach.Iop Itailcall_ind)
+    | Direct { func_symbol } ->
       let func = func_symbol in
       at_oper (Mach.Iop (Itailcall_imm { func })))
   | Call_no_return { func_symbol; alloc; ty_res; ty_args } ->
     let func = func_symbol in
     let returns = false in
     at_oper (Mach.Iop (Iextcall { func; ty_res; ty_args; alloc; returns }))
+  | Call { call = c; _ } -> (
+    match c with
+    | Indirect -> at_oper (Iop Icall_ind)
+    | Direct { func_symbol } ->
+      let func = func_symbol in
+      at_oper (Iop (Icall_imm { func })))
+  | Prim { prim = p; _ } -> (
+    match p with
+    | External { func_symbol; alloc; ty_res; ty_args } ->
+      let func = func_symbol in
+      let returns = true in
+      at_oper (Iop (Iextcall { func; ty_res; ty_args; alloc; returns }))
+    | Alloc { bytes; dbginfo; mode } ->
+      at_oper (Iop (Ialloc { bytes; dbginfo; mode }))
+    | Checkbound { immediate } -> (
+      match immediate with
+      | None -> at_oper (Iop (Iintop Icheckbound))
+      | Some x -> at_oper (Iop (Iintop_imm (Icheckbound, x))))
+    | Probe { name; handler_code_sym } ->
+      at_oper (Iop (Iprobe { name; handler_code_sym })))
+  | Specific_can_raise { op; _ } -> at_oper (Iop (Ispecific op))
 
 let[@inline] int_max (left : int) (right : int) = Stdlib.max left right
 
@@ -268,14 +271,13 @@ let precondition : Cfg_with_layout.t -> unit =
       | Compf _ -> ()
       | Floatofint -> ()
       | Intoffloat -> ()
-      | Probe _ -> ()
       | Probe_is_enabled _ -> ()
       | Opaque -> ()
       | Begin_region -> ()
       | End_region -> ()
       | Specific _ -> ()
       | Name_for_debugger _ -> ())
-    | Call _ | Reloadretaddr | Pushtrap _ | Poptrap | Prologue -> ()
+    | Reloadretaddr | Pushtrap _ | Poptrap | Prologue -> ()
   in
   let register_must_not_be_on_stack (id : Instruction.id) (reg : Reg.t) : unit =
     match reg.Reg.loc with

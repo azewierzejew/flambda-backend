@@ -64,15 +64,14 @@ struct
       (* If the operation is without side-effects and the result is unused then
          the arguments also aren't necessary. *)
       { before; across = before }
-    else
-      instruction ~can_raise:(Cfg.can_raise_basic instr.desc) ~exn domain instr
+    else instruction ~can_raise:false ~exn domain instr
 
   let terminator :
       domain -> exn:domain -> Cfg.terminator Cfg.instruction -> domain =
    fun domain ~exn instr ->
     match instr.desc with
     | Never -> assert false
-    | Tailcall (Self _) ->
+    | Tailcall_self _ ->
       (* CR-someday azewierzejew: If the stamps for the tail call DomainState
          argument and parameter were the same and Tailcall (Self _) had
          [instr.arg = instr.reg] (either by removing the args or adding results
