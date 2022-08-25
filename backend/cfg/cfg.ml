@@ -143,6 +143,13 @@ let replace_successor_labels t ~normal ~exn block ~f =
     in
     block.terminator <- { block.terminator with desc }
 
+let add_block_exn t block =
+  if Label.Tbl.mem t.blocks block.start
+  then
+    Misc.fatal_errorf "Cfr.add_block_exn: block %d is already present"
+      block.start;
+  Label.Tbl.add t.blocks block.start block
+
 let remove_block_exn t label =
   match Label.Tbl.find t.blocks label with
   | exception Not_found ->

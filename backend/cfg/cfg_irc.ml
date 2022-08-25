@@ -418,14 +418,13 @@ let rewrite : State.t -> Cfg_with_layout.t -> Reg.t list -> reset:bool -> unit =
     !res
   in
   let rec rewrite_body (acc : Instruction.t list) (body : Instruction.t list)
-      (terminator : Cfg.terminator Cfg.instruction) : Instruction.t list =
+      (terminator : Cfg.terminator Cfg.instruction) :
+      Instruction.t list * (Reg.t * [`load | `store]) Reg.Tbl.t =
     match body with
     | [] ->
-      let acc =
-        rewrite_instruction ~direction:`load ~sharing:(Reg.Tbl.create 8) acc
-          terminator
-      in
-      List.rev acc
+      let sharing = Reg.Tbl.create 8 in
+      let acc = rewrite_instruction ~direction:`load ~sharing acc terminator in
+      List.rev acc, sharing
     | hd :: tl ->
       let sharing = Reg.Tbl.create 8 in
       let acc = rewrite_instruction ~direction:`load ~sharing acc hd in
@@ -434,26 +433,80 @@ let rewrite : State.t -> Cfg_with_layout.t -> Reg.t list -> reset:bool -> unit =
       rewrite_body acc tl terminator
   in
   Cfg.iter_blocks (Cfg_with_layout.cfg cfg_with_layout) ~f:(fun label block ->
-      (* CR xclerc for xclerc: we currently assume that a terminator does not
-         "define" a register that may be spilled. Calls are reasonably fine
-         since their result is in a precolored register. *)
-      assert (not (array_contains_spilled block.terminator.res));
       let body_needs_rewrite =
         instruction_list_contains_spilled block.body
         || array_contains_spilled block.terminator.arg
       in
+      let terminator_sharing = ref None in
       if body_needs_rewrite
       then (
         if irc_debug
         then (
           log ~indent:2 "body of #%d, before:" label;
           log_body_and_terminator ~indent:3 block.body block.terminator);
-        block.body <- rewrite_body [] block.body block.terminator;
+        let new_body, term_sharing =
+          rewrite_body [] block.body block.terminator
+        in
+        block.body <- new_body;
+        terminator_sharing := Some term_sharing;
         if irc_debug
         then (
           log ~indent:2 "and after:";
           log_body_and_terminator ~indent:3 block.body block.terminator;
-          log ~indent:2 "end")));
+          log ~indent:2 "end"));
+      if array_contains_spilled block.terminator.res
+      then (
+        let cfg = Cfg_with_layout.cfg cfg_with_layout in
+        let terminator = block.terminator in
+        let successors = Cfg.successor_labels ~normal:true ~exn:false block in
+        (* Only terminators with one following label can define a result. *)
+        assert (Label.Set.cardinal successors = 1);
+        let next_label = Label.Set.min_elt successors in
+        let next_block = Cfg.get_block_exn cfg next_label in
+        let sharing =
+          match !terminator_sharing with
+          | Some sharing -> sharing
+          | None -> Reg.Tbl.create 8
+        in
+        let spills =
+          rewrite_instruction ~direction:`store ~sharing [] block.terminator
+        in
+        assert (List.length spills > 0);
+        (* Make new block for the spills. *)
+        let spill_label = Cmm.new_label () in
+        let spill_block : Cfg.basic_block =
+          { start = spill_label;
+            body = spills;
+            terminator =
+              { desc = Cfg.Always next_label;
+                arg = [||];
+                res = [||];
+                dbg = terminator.dbg;
+                fdo = terminator.fdo;
+                live = terminator.live;
+                stack_offset = next_block.stack_offset;
+                id = State.get_and_incr_instruction_id state;
+                irc_work_list = Unknown_list
+              };
+            (* The original block is the only predecessor. *)
+            predecessors = Label.Set.singleton block.start;
+            stack_offset = next_block.stack_offset;
+            exn = None;
+            can_raise = false;
+            is_trap_handler = false;
+            dead = block.dead
+          }
+        in
+        Cfg_with_layout.add_block cfg_with_layout spill_block ~after:block.start;
+        (* Change the labels for the terminator. *)
+        Cfg.replace_successor_labels cfg ~normal:true ~exn:false block
+          ~f:(fun old_label ->
+            assert (old_label = next_label);
+            spill_label);
+        (* Updated predecessors for the following block. *)
+        next_block.predecessors
+          <- Label.Set.remove block.start next_block.predecessors
+             |> Label.Set.add spill_label));
   if reset
   then State.reset state ~new_temporaries:!new_temporaries
   else (
