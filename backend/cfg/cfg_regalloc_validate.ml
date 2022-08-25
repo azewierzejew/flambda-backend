@@ -96,40 +96,72 @@ module Location = struct
   let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
 
-module Register = struct
+module Reg_id = struct
   type t =
-    { raw_name : Reg.Raw_name.t;
-      stamp : int;
-      loc : Location.t option;
-      typ : Cmm.machtype_component
+    | Physical of { location : Location.t }
+    | Named of { stamp : int }
+
+  let of_reg (reg : Reg.t) =
+    let loc = Location.of_reg reg in
+    if Option.is_some loc <> Reg.is_phys reg
+    then
+      Cfg_regalloc_utils.fatal
+        "Mismatch between register having location (%b) and register being a \
+         physical register (%b)"
+        (Option.is_some loc) (Reg.is_phys reg);
+    match loc with
+    | Some location -> Physical { location }
+    | None -> Named { stamp = reg.stamp }
+
+  let to_loc_lossy t =
+    match t with
+    | Physical { location } -> Location.to_loc_lossy location
+    | Named _ -> Reg.Unknown
+
+  let compare (t1 : t) (t2 : t) = compare t1 t2
+
+  let print ~typ ~raw_name ppf t =
+    match t with
+    | Physical { location } ->
+      Format.fprintf ppf "R[%a]" Location.print location
+    | Named { stamp } ->
+      Format.fprintf ppf "%s/%d"
+        (Reg.name { Reg.dummy with raw_name; stamp; typ })
+        stamp
+end
+
+module Register = struct
+  module For_print = struct
+    type t =
+      { raw_name : Reg.Raw_name.t;
+        stamp : int;
+        typ : Cmm.machtype_component
+      }
+  end
+
+  type t =
+    { reg_id : Reg_id.t;
+      for_print : For_print.t
     }
 
-  let create reg =
-    { stamp = reg.Reg.stamp;
-      loc = Location.of_reg reg;
-      raw_name = reg.Reg.raw_name;
-      typ = reg.Reg.typ
+  let create (reg : Reg.t) : t =
+    { reg_id = Reg_id.of_reg reg;
+      for_print = { raw_name = reg.raw_name; stamp = reg.stamp; typ = reg.typ }
     }
 
-  let to_dummy_reg t =
+  let to_dummy_reg (t : t) : Reg.t =
     { Reg.dummy with
-      raw_name = t.raw_name;
-      typ = t.typ;
-      stamp = t.stamp;
-      loc =
-        Option.map Location.to_loc_lossy t.loc
-        |> Option.value ~default:Reg.Unknown
+      raw_name = t.for_print.raw_name;
+      typ = t.for_print.typ;
+      stamp = t.for_print.stamp;
+      loc = Reg_id.to_loc_lossy t.reg_id
     }
 
-  let print ppf t = Printmach.reg ppf (to_dummy_reg t)
+  let print (ppf : Format.formatter) (t : t) : unit =
+    Reg_id.print ~typ:t.for_print.typ ~raw_name:t.for_print.raw_name ppf
+      t.reg_id
 
-  let compare (t1 : t) (t2 : t) : int =
-    let stamp_cmp = Int.compare t1.stamp t2.stamp in
-    let t_eq = t1 = t2 in
-    (* Check that stamps are equal iff every value in the [Register] is
-       equal. *)
-    assert (t_eq = (stamp_cmp = 0));
-    stamp_cmp
+  let compare (t1 : t) (t2 : t) : int = Reg_id.compare t1.reg_id t2.reg_id
 
   let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
@@ -206,18 +238,18 @@ module Description = struct
         "The instruction's no. %d %s count has changed. Before: %d. Now: %d." id
         name (Array.length reg_arr) (Array.length loc_arr);
     Array.iter2
-      (fun reg_desc loc_reg ->
-        match reg_desc.Register.loc, Location.of_reg loc_reg with
+      (fun (reg_desc : Register.t) loc_reg ->
+        match reg_desc.reg_id, Location.of_reg loc_reg with
         | _, None ->
           Cfg_regalloc_utils.fatal
             "The instruction's no. %d %s is still unknown after allocation" id
             name
-        | None, _ -> ()
-        | Some l1, Some l2 when Location.equal l1 l2 -> ()
-        | Some prev_loc, Some new_loc ->
+        | Named { stamp = _ }, _ -> ()
+        | Physical { location = l1 }, Some l2 when Location.equal l1 l2 -> ()
+        | Physical { location = prev_loc }, Some new_loc ->
           Cfg_regalloc_utils.fatal
-            "The instruction's no. %d %s has changed precolored location from \
-             %a to %a"
+            "The instruction's no. %d %s has changed physical register \
+             location from %a to %a"
             id name Location.print prev_loc Location.print new_loc)
       reg_arr loc_arr;
     ()
@@ -521,15 +553,13 @@ module Domain = struct
   (** For equations coming from exceptional path remove the expected equations. *)
   let remove_exn_bucket equations =
     let phys_reg = Proc.loc_exn_bucket in
-    let reg =
-      { Register.stamp = phys_reg.stamp;
-        loc = Location.of_reg phys_reg;
-        raw_name = phys_reg.raw_name;
-        typ = phys_reg.typ
-      }
+    let reg = Register.create phys_reg in
+    let loc =
+      match reg.reg_id with
+      | Physical { location } -> location
+      | Named _ -> failwith "unreachable"
     in
-    Equation_set.remove_result equations ~reg_res:[| reg |]
-      ~loc_res:[| Option.get reg.Register.loc |]
+    Equation_set.remove_result equations ~reg_res:[| reg |] ~loc_res:[| loc |]
     |> Result.map_error (fun message ->
            Printf.sprintf "While removing exn bucket: %s" message)
 

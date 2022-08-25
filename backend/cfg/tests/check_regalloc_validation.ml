@@ -539,8 +539,8 @@ let () =
       cfg1, cfg2)
     ~exp_std:"fatal exception raised when validating description"
     ~exp_err:
-      ">> Fatal error: The instruction's no. 22 result has changed precolored \
-       location from %rdi to %rbx"
+      ">> Fatal error: The instruction's no. 22 result has changed physical \
+       register location from %rdi to %rbx"
 
 let () =
   check "Duplicate instruction found when validating description"
@@ -648,7 +648,7 @@ let () =
     ~exp_err:
       ">> Fatal error: Instruction no. 8 was deleted by register allocator"
 
-let make_loop n =
+let make_loop ~loop_loc_first n =
   let make_id =
     let last_id = ref 2 in
     fun () ->
@@ -665,7 +665,11 @@ let make_loop n =
     in
     regs, locs
   in
-  let loop_label = call_label in
+  let loop_loc_label, loop_reg_label =
+    let l1 = new_label 1 in
+    let l2 = new_label 2 in
+    if loop_loc_first then l1, l2 else l2, l1
+  in
   let stack_loc =
     let locs =
       Array.init (n + 1) (fun i -> Reg.at_location Int (Stack (Local i)))
@@ -732,12 +736,19 @@ let make_loop n =
             exn = None;
             terminator =
               { id = make_id ();
-                desc = Always loop_label;
-                arg = [||];
+                desc =
+                  Int_test
+                    { lt = loop_loc_label;
+                      eq = loop_reg_label;
+                      gt = move_tmp_res_label;
+                      is_signed = true;
+                      imm = Some 0
+                    };
+                arg = [| int_arg1 |];
                 res = [||]
               }
           };
-          { start = loop_label;
+          { start = loop_loc_label;
             body =
               (* Rotate all locations by one index. *)
               List.init n (fun n ->
@@ -758,19 +769,44 @@ let make_loop n =
               { id = make_id ();
                 desc =
                   Int_test
-                    { lt = loop_label;
+                    { lt = loop_loc_label;
+                      eq = loop_reg_label;
+                      gt = move_tmp_res_label;
+                      is_signed = true;
+                      imm = Some 1
+                    };
+                arg = [| int_arg1 |];
+                res = [||]
+              }
+          };
+          { start = loop_reg_label;
+            body =
+              (* Rotate all regs by one index. *)
+              List.init (n - 1) (fun n ->
+                  (* Move reg i+1 to i. *)
+                  { Instruction.id = make_id ();
+                    desc = Op Move;
+                    arg = [| extra_regs.(n + 1) |];
+                    res = [| extra_regs.(n) |]
+                  });
+            exn = None;
+            terminator =
+              { id = make_id ();
+                desc =
+                  Int_test
+                    { lt = loop_reg_label;
                       eq = move_tmp_res_label;
                       gt = move_tmp_res_label;
-                      is_signed = false;
-                      imm = None
+                      is_signed = true;
+                      imm = Some 2
                     };
-                arg = [||];
+                arg = [| int_arg1 |];
                 res = [||]
               }
           };
           { start = move_tmp_res_label;
             body =
-              (* Require that all extra regs are in location 0. This will break
+              (* Require that extra reg 0 is in location 0. This will break
                  after loop is run at least [n] times because then the spilled
                  [arg2] in location n will rotate over to location 0. For that
                  reason the fix-point algorithm will also have to run n
@@ -779,21 +815,19 @@ let make_loop n =
                   desc = Op (Const_int (Nativeint.of_int 1));
                   arg = [||];
                   res = [| int_arg1 |]
-                } ]
-              @ (List.init n (fun n ->
-                     (* Load extra reg from location 0.*)
-                     [ { Instruction.id = make_id ();
-                         desc = Op Reload;
-                         arg = [| stack_loc 0 |];
-                         res = [| extra_regs.(n) |]
-                       };
-                       (* Add the extra reg to accumalated result. *)
-                       { Instruction.id = make_id ();
-                         desc = Op (Intop Iadd);
-                         arg = [| int_arg1; extra_regs.(n) |];
-                         res = [| int_arg1 |]
-                       } ])
-                |> List.concat);
+                };
+                (* Load extra reg 0 from location 0.*)
+                { Instruction.id = make_id ();
+                  desc = Op Reload;
+                  arg = [| stack_loc 0 |];
+                  res = [| extra_regs.(0) |]
+                };
+                (* Add the extra reg 0 to accumalated result. *)
+                { Instruction.id = make_id ();
+                  desc = Op (Intop Iadd);
+                  arg = [| int_arg1; extra_regs.(0) |];
+                  res = [| int_arg1 |]
+                } ];
             exn = None;
             terminator =
               { id = make_id ();
@@ -820,27 +854,37 @@ let make_loop n =
   in
   Cfg_desc.make_pre templ, Cfg_desc.make_post templ
 
-let test_loop n =
+let test_loop ~loop_loc_first n =
   assert (n >= 2);
   let start_time = Sys.time () in
   check
     (Printf.sprintf "Check loop with %d locations" n)
-    (fun () -> make_loop n)
+    (fun () -> make_loop ~loop_loc_first n)
     ~exp_std:
       "Validation failed: Bad eqauations at entry point, reason: Unsatisfiable \
-       equations when removing result equations. Equation R/2[%rdi]=%rbx. \
-       Result reg: R/1[%rbx], result location: %rbx\n\
-       Equations: R/2[%rdi]=%rbx R/2[%rdi]=%rdi\n\
+       equations when removing result equations. Equation R[%rdi]=%rbx. Result \
+       reg: R[%rbx], result location: %rbx\n\
+       Equations: R[%rax]=%rax R[%rdi]=%rbx R[%rdi]=%rdi\n\
        Function arguments: R/0[%rax] R/1[%rbx] R/2[%rdi]"
     ~exp_err:"";
   let end_time = Sys.time () in
   Format.printf "  Time of loop test: %fs\n" (end_time -. start_time);
   ()
 
-let () = test_loop 2
+let () = test_loop ~loop_loc_first:true 2
 
-let () = test_loop 10
+let () = test_loop ~loop_loc_first:true 5
 
-let () = test_loop 25
+let () = test_loop ~loop_loc_first:true 10
 
-let () = test_loop 50
+let () = test_loop ~loop_loc_first:true 20
+
+let () = test_loop ~loop_loc_first:false 2
+
+let () = test_loop ~loop_loc_first:false 5
+
+let () = test_loop ~loop_loc_first:false 10
+
+let () = test_loop ~loop_loc_first:false 20
+
+let () = test_loop ~loop_loc_first:false 40
