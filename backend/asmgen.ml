@@ -349,7 +349,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
   ++ Profile.record ~accumulate:true "selection" Selection.fundecl
   ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Mach_sel
   ++ pass_dump_if ppf_dump dump_selection "After instruction selection"
-  ++ save_mach_as_cfg Compiler_pass.Selection
+  ++ Profile.record ~accumulate:true "save_mach_as_cfg" (save_mach_as_cfg Compiler_pass.Selection)
   ++ Profile.record ~accumulate:true "comballoc" Comballoc.fundecl
   ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Mach_combine
   ++ pass_dump_if ppf_dump dump_combine "After allocation combining"
@@ -360,21 +360,25 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
   ++ Profile.record ~accumulate:true "deadcode" Deadcode.fundecl
   ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Mach_live
   ++ pass_dump_if ppf_dump dump_live "Liveness analysis"
-  ++ (fun (fd : Mach.fundecl) ->
+  ++ Profile.record ~accumulate:true "regalloc" (fun (fd : Mach.fundecl) ->
     let force_linscan = should_use_linscan fd in
-      match force_linscan, register_allocator with
-      | false, IRC ->
+    match force_linscan, register_allocator with
+    | false, IRC ->
+      fd
+      ++ Profile.record ~accumulate:true "irc" (fun fd ->
         let cfg =
           fd
           ++ Profile.record ~accumulate:true "cfgize" cfgize
         in
-        let cfg_description = Cfg_regalloc_validate.Description.create cfg in
+        let cfg_description = Profile.record ~accumulate:true "cfg_create_description" Cfg_regalloc_validate.Description.create cfg in
         cfg
         ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
-        ++ Cfg_regalloc_validate.verify_exn cfg_description
-        ++ Cfg_regalloc_utils.simplify_cfg
-        ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run
-      | true, _ | false, Upstream ->
+        ++ Profile.record ~accumulate:true "cfg_verify_description" (Cfg_regalloc_validate.verify_exn cfg_description)
+        ++ Profile.record ~accumulate:true "cfg_simplify" Cfg_regalloc_utils.simplify_cfg
+        ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run)
+    | true, _ | false, Upstream ->
+      fd
+      ++ Profile.record ~accumulate:true "linscan" (fun fd ->
         let res =
           fd
           ++ Profile.record ~accumulate:true "spill" Spill.fundecl
@@ -395,25 +399,25 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
               test_cfgize f res;
             end;
             res)
-        ++ pass_dump_linear_if ppf_dump dump_linear "Linearized code")
+        ++ pass_dump_linear_if ppf_dump dump_linear "Linearized code"))
   ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Linear
-  ++ (fun (fd : Linear.fundecl) ->
+  ++ Profile.record ~accumulate:true "reorder_blocks" (fun (fd : Linear.fundecl) ->
     if !Flambda_backend_flags.use_ocamlcfg then begin
       fd
       ++ Profile.record ~accumulate:true "linear_to_cfg"
            (Linear_to_cfg.run ~preserve_orig_labels:true)
       ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Cfg
       ++ pass_dump_cfg_if ppf_dump Flambda_backend_flags.dump_cfg "After linear_to_cfg"
-      ++ save_cfg
-      ++ reorder_blocks_random ppf_dump
+      ++ Profile.record ~accumulate:true "save_cfg" save_cfg
+      ++ Profile.record ~accumulate:true "cfg_reorder_blocks" (reorder_blocks_random ppf_dump)
       ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run
       ++ pass_dump_linear_if ppf_dump dump_linear "After cfg_to_linear"
     end else
       fd)
   ++ Profile.record ~accumulate:true "scheduling" Scheduling.fundecl
   ++ pass_dump_linear_if ppf_dump dump_scheduling "After instruction scheduling"
-  ++ save_linear
-  ++ emit_fundecl ~dwarf
+  ++ Profile.record ~accumulate:true "save_linear" save_linear
+  ++ Profile.record ~accumulate:true "emit_fundecl" (emit_fundecl ~dwarf)
 
 let compile_data dl =
   dl
