@@ -167,6 +167,7 @@ module type Backward_S = sig
   type _ map =
     | Block : domain Label.Tbl.t map
     | Instr : domain Instr.Tbl.t map
+    | Both : (domain Instr.Tbl.t * domain Label.Tbl.t) map
 
   val run :
     Cfg.t ->
@@ -188,6 +189,7 @@ module Backward
   type _ map =
     | Block : domain Label.Tbl.t map
     | Instr : domain Instr.Tbl.t map
+    | Both : (domain Instr.Tbl.t * domain Label.Tbl.t) map
 
   module WorkSetElement = struct
     type t =
@@ -265,7 +267,7 @@ module Backward
       Label.Tbl.create (Label.Tbl.length cfg.Cfg.blocks)
     in
     let instr_map : D.t Instr.Tbl.t option =
-      match map with Block -> None | Instr -> Some res_instr
+      match map with Block -> None | Both | Instr -> Some res_instr
     in
     while (not (WorkSet.is_empty !work_set)) && !iteration < max_iteration do
       incr iteration;
@@ -340,5 +342,8 @@ module Backward
     let return x =
       if WorkSet.is_empty !work_set then Result.Ok x else Result.Error x
     in
-    match map with Block -> return res_block | Instr -> return res_instr
+    match map with
+    | Block -> return res_block
+    | Instr -> return res_instr
+    | Both -> return (res_instr, res_block)
 end

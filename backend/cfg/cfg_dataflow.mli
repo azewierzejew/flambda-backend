@@ -57,14 +57,20 @@ module Forward
 module type Backward_domain = sig
   type t
 
+  (** Value to use if a block didn't have any other assigned (similar to the
+      [init] argument in [run]) *)
   val bot : t
 
   val compare : t -> t -> int
   (* note: `compare` is an order that can be passed to e.g. `Map.Make` or
      `Set.Make`; it does not need to be compatible with `less_than`. *)
 
+  (** [join old_value successor_value] has to join last know value for the end
+      of the block with an updated value from a successor. *)
   val join : t -> t -> t
 
+  (** [less_equal new_value old_value] should return [true] if there is no need
+      to recompute results with the [new_value]. *)
   val less_equal : t -> t -> bool
 
   val to_string : t -> string
@@ -89,6 +95,7 @@ module type Backward_S = sig
   type _ map =
     | Block : domain Label.Tbl.t map
     | Instr : domain Instr.Tbl.t map
+    | Both : (domain Instr.Tbl.t * domain Label.Tbl.t) map
 
   val run :
     Cfg.t ->

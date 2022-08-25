@@ -3,6 +3,11 @@
 module Array = ArrayLabels
 module List = ListLabels
 
+let bool_of_env env_var =
+  match Sys.getenv_opt env_var with Some "1" -> true | Some _ | None -> false
+
+let regalloc_debug = bool_of_env "REGALLOC_DEBUG"
+
 let fatal_callback = ref (fun () -> ())
 
 let on_fatal ~f = fatal_callback := f
