@@ -164,9 +164,13 @@ let write_ir prefix =
 let should_emit () =
   not (should_stop_after Compiler_pass.Scheduling)
 
+let disable_force_linscan : bool =
+  Cfg_regalloc_utils.bool_of_env "DISABLE_FORCE_LINSCAN"
+
 let should_use_linscan fd =
-  !use_linscan ||
-  List.mem Cmm.Use_linscan_regalloc fd.Mach.fun_codegen_options
+  (not disable_force_linscan)
+  && (!use_linscan
+     || List.mem Cmm.Use_linscan_regalloc fd.Mach.fun_codegen_options)
 
 let if_emit_do f x = if should_emit () then f x else ()
 let emit_begin_assembly ~init_dwarf:init_dwarf =
