@@ -120,14 +120,13 @@ module Reg_id = struct
 
   let compare (t1 : t) (t2 : t) = compare t1 t2
 
-  let print ~typ ~raw_name ppf t =
+  let print ~typ ~raw_name ~spill ppf t =
     match t with
     | Physical { location } ->
       Format.fprintf ppf "R[%a]" Location.print location
     | Named { stamp } ->
-      Format.fprintf ppf "%s/%d"
-        (Reg.name { Reg.dummy with raw_name; stamp; typ })
-        stamp
+      Format.fprintf ppf "%a" Printmach.reg
+        { Reg.dummy with raw_name; stamp; typ; spill }
 end
 
 module Register = struct
@@ -135,7 +134,8 @@ module Register = struct
     type t =
       { raw_name : Reg.Raw_name.t;
         stamp : int;
-        typ : Cmm.machtype_component
+        typ : Cmm.machtype_component;
+        spill : bool
       }
   end
 
@@ -146,7 +146,12 @@ module Register = struct
 
   let create (reg : Reg.t) : t =
     { reg_id = Reg_id.of_reg reg;
-      for_print = { raw_name = reg.raw_name; stamp = reg.stamp; typ = reg.typ }
+      for_print =
+        { raw_name = reg.raw_name;
+          stamp = reg.stamp;
+          typ = reg.typ;
+          spill = reg.spill
+        }
     }
 
   let to_dummy_reg (t : t) : Reg.t =
@@ -158,8 +163,8 @@ module Register = struct
     }
 
   let print (ppf : Format.formatter) (t : t) : unit =
-    Reg_id.print ~typ:t.for_print.typ ~raw_name:t.for_print.raw_name ppf
-      t.reg_id
+    Reg_id.print ~typ:t.for_print.typ ~raw_name:t.for_print.raw_name
+      ~spill:t.for_print.spill ppf t.reg_id
 
   let compare (t1 : t) (t2 : t) : int = Reg_id.compare t1.reg_id t2.reg_id
 
