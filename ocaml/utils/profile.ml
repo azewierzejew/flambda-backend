@@ -104,15 +104,22 @@ type display = {
   worth_displaying : max:float -> bool;
 }
 
-let time_display v : display =
+let time_display' ~precision v : display =
   (* Because indentation is meaningful, and because the durations are
      the first element of each row, we can't pad them with spaces. *)
-  let to_string_without_unit v ~width = Printf.sprintf "%0*.03f" width v in
+  let to_string_without_unit v ~width = Printf.sprintf "%0*.*f" width precision v in
   let to_string ~max:_ ~width =
     to_string_without_unit v ~width:(width - 1) ^ "s" in
   let worth_displaying ~max:_ =
     float_of_string (to_string_without_unit v ~width:0) <> 0. in
   { to_string; worth_displaying }
+
+let precise_time_display v : display = 
+  (* Use precision 6 because current implementation of [cpu_time] counts up
+     to microseconds. *)
+  time_display' ~precision:6 v
+
+let time_display v : display = time_display' ~precision:3 v
 
 let memory_word_display =
   (* To make memory numbers easily comparable across rows, we choose a single
@@ -187,7 +194,7 @@ let compute_other_category (E table : hierarchy) (total : Measure_diff.t) =
   !r
 
 type row = R of string * (float * display) list * row list
-type column = [ `Time | `Alloc | `Top_heap | `Abs_top_heap ]
+type column = [ `Precise_time | `Time | `Alloc | `Top_heap | `Abs_top_heap ]
 
 let rec rows_of_hierarchy ~nesting make_row name measure_diff hierarchy env =
   let rows =
@@ -237,6 +244,8 @@ let rows_of_hierarchy hierarchy measure_diff initial_measure columns =
       in
       let make value ~f = value, f value in
       List.map (function
+        | `Precise_time ->
+          make p.duration ~f:precise_time_display
         | `Time ->
           make p.duration ~f:time_display
         | `Alloc ->

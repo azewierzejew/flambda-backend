@@ -549,6 +549,10 @@ let mk_thread f =
   " (deprecated) same as -I +threads"
 ;;
 
+let mk_dprec_timings f =
+  "-dprec-timings", Arg.Unit f, " Print precise timings information for each pass";
+;;
+
 let mk_dtimings f =
   "-dtimings", Arg.Unit f, " Print timings information for each pass";
 ;;
@@ -1038,6 +1042,7 @@ module type Compiler_options = sig
   val _error_style : string -> unit
 
   val _match_context_rows : int -> unit
+  val _dprec_timings : unit -> unit
   val _dtimings : unit -> unit
   val _dprofile : unit -> unit
   val _dump_into_file : unit -> unit
@@ -1291,6 +1296,7 @@ struct
     mk_dlambda F._dlambda;
     mk_dinstr F._dinstr;
     mk_dcamlprimc F._dcamlprimc;
+    mk_dprec_timings F._dprec_timings;
     mk_dtimings F._dtimings;
     mk_dprofile F._dprofile;
     mk_dump_into_file F._dump_into_file;
@@ -1519,6 +1525,7 @@ struct
     mk_dlinear F._dlinear;
     mk_dinterval F._dinterval;
     mk_dstartup F._dstartup;
+    mk_dprec_timings F._dprec_timings;
     mk_dtimings F._dtimings;
     mk_dprofile F._dprofile;
     mk_dump_into_file F._dump_into_file;
@@ -1898,6 +1905,7 @@ module Default = struct
     let _config = Misc.show_config_and_exit
     let _config_var = Misc.show_config_variable_and_exit
     let _dprofile () = profile_columns := Profile.all_columns
+    let _dprec_timings () = profile_columns := [`Precise_time]
     let _dtimings () = profile_columns := [`Time]
     let _dump_into_file = set dump_into_file
     let _for_pack s = for_package := (Some s)
