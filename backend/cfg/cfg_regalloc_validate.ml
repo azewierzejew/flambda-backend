@@ -203,7 +203,7 @@ module Description = struct
 
   let add_instr ~seen_ids ~is_regalloc_specific instructions instr =
     let id = instr.id in
-    if Hashtbl.find_opt seen_ids id |> Option.is_some
+    if Hashtbl.mem seen_ids id
     then
       Cfg_regalloc_utils.fatal
         "Duplicate instruction no. %d while creating pre-allocation description"
