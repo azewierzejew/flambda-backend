@@ -172,6 +172,9 @@ let should_use_linscan fd =
   && (!use_linscan
      || List.mem Cmm.Use_linscan_regalloc fd.Mach.fun_codegen_options)
 
+let cfg_regalloc_validate : bool =
+  Cfg_regalloc_utils.bool_of_env "CFG_REGALLOC_VALIDATE"
+
 let if_emit_do f x = if should_emit () then f x else ()
 let emit_begin_assembly ~init_dwarf:init_dwarf =
   if_emit_do (fun init_dwarf -> Emit.begin_assembly ~init_dwarf) init_dwarf
@@ -377,6 +380,17 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
           fd
           ++ Profile.record ~accumulate:true "cfgize" cfgize
           ++ Profile.record ~accumulate:true "cfg_deadcode" Cfg_deadcode.run
+        in
+        let cfg = 
+          if cfg_regalloc_validate
+          then (
+            let cfg_description = Profile.record ~accumulate:true "cfg_create_description" Cfg_regalloc_validate.Description.create cfg in
+            cfg
+            ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
+            ++ Profile.record ~accumulate:true "cfg_verify_description" (Cfg_regalloc_validate.verify_exn cfg_description))
+          else 
+            cfg
+            ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
         in
         let cfg_description = Profile.record ~accumulate:true "cfg_create_description" Cfg_regalloc_validate.Description.create cfg in
         cfg
