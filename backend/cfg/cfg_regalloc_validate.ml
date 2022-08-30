@@ -639,7 +639,7 @@ module Domain = struct
         error = None
       }
 
-  let rename_register t ~reg_instr =
+  let rename_register t ~(reg_instr : _ Instruction.t) =
     match t with
     | { error = Some _; _ } -> t
     | { error = None; equations } ->
