@@ -65,7 +65,7 @@ module type Backward_domain = sig
   (* note: `compare` is an order that can be passed to e.g. `Map.Make` or
      `Set.Make`; it does not need to be compatible with `less_than`. *)
 
-  (** [join old_value successor_value] has to join last know value for the end
+  (** [join old_value successor_value] has to join the last known value for the end
       of the block with an updated value from a successor. *)
   val join : t -> t -> t
 
