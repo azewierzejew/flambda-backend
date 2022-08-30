@@ -363,10 +363,6 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
   ++ Profile.record ~accumulate:true "cse" CSE.fundecl
   ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Mach_cse
   ++ pass_dump_if ppf_dump dump_cse "After CSE"
-  ++ Profile.record ~accumulate:true "liveness" liveness
-  ++ Profile.record ~accumulate:true "deadcode" Deadcode.fundecl
-  ++ Compiler_hooks.execute_and_pipe Compiler_hooks.Mach_live
-  ++ pass_dump_if ppf_dump dump_live "Liveness analysis"
   ++ Profile.record ~accumulate:true "regalloc" (fun (fd : Mach.fundecl) ->
     let force_linscan = should_use_linscan fd in
     match force_linscan, register_allocator with
@@ -376,6 +372,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
         let cfg =
           fd
           ++ Profile.record ~accumulate:true "cfgize" cfgize
+          ++ Profile.record ~accumulate:true "cfg_deadcode" Cfg_deadcode.run
         in
         let cfg_description = Profile.record ~accumulate:true "cfg_create_description" Cfg_regalloc_validate.Description.create cfg in
         cfg
