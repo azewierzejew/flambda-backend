@@ -643,7 +643,6 @@ module Domain = struct
     match t with
     | { error = Some _; _ } -> t
     | { error = None; equations } ->
-      let open! Instruction in
       assert (Array.length reg_instr.arg = 1);
       assert (Array.length reg_instr.res = 1);
       { equations =
