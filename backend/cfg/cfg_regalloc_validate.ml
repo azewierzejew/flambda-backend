@@ -2,22 +2,36 @@
 
 include Cfg_intf.S
 
-module Location = struct
+module Location : sig
+  type t
+
+  val of_reg : Reg.t -> t option
+
+  val of_reg_exn : Reg.t -> t
+
+  val to_loc_lossy : t -> Reg.location
+
+  val print : Format.formatter -> t -> unit
+
+  val compare : t -> t -> int
+
+  val equal : t -> t -> bool
+end = struct
   module Stack = struct
     type t =
       | Local of
           { index : int;
             reg_class : int
           }
-      | Incoming of int
-      | Outgoing of int
-      | Domainstate of int
+      | Incoming of { index : int }
+      | Outgoing of { index : int }
+      | Domainstate of { index : int }
 
     let word_size = 8
 
     let byte_bits = 8
 
-    let byte_offset_to_word_index offset =
+    let check_word_size () =
       (* CR azewierzejew: This seems good enough but maybe we would want to
          consider unaligned offsets or 32-bit architecture. *)
       if Sys.word_size <> word_size * byte_bits
@@ -25,43 +39,46 @@ module Location = struct
         Cfg_regalloc_utils.fatal
           "regalloc validation only supports 64 bit architecture, got word \
            size %d"
-          Sys.word_size;
+          Sys.word_size
+
+    let byte_offset_to_word_index offset =
+      check_word_size ();
       if offset mod word_size <> 0
       then
         Cfg_regalloc_utils.fatal
-          "regalloc validation aligned offsets, got offset %d with remainder %d"
+          "regalloc validation expects aligned offsets, got offset %d with \
+           remainder %d"
           offset (offset mod word_size);
       offset / word_size
 
     let word_index_to_byte_offset index =
-      (* CR azewierzejew: This seems good enough but maybe we would want to
-         consider unaligned offsets or 32-bit architecture. *)
-      if Sys.word_size <> word_size * byte_bits
-      then
-        Cfg_regalloc_utils.fatal
-          "regalloc validation only supports 64 bit architecture, got word \
-           size %d"
-          Sys.word_size;
+      check_word_size ();
       index * word_size
 
     let of_stack_loc ~reg_class loc =
       match loc with
       | Reg.Local index -> Local { index; reg_class }
-      | Reg.Incoming offset -> Incoming (byte_offset_to_word_index offset)
-      | Reg.Outgoing offset -> Outgoing (byte_offset_to_word_index offset)
-      | Reg.Domainstate offset -> Domainstate (byte_offset_to_word_index offset)
+      | Reg.Incoming offset ->
+        Incoming { index = byte_offset_to_word_index offset }
+      | Reg.Outgoing offset ->
+        Outgoing { index = byte_offset_to_word_index offset }
+      | Reg.Domainstate offset ->
+        Domainstate { index = byte_offset_to_word_index offset }
 
     let to_stack_loc_lossy t =
       match t with
       | Local { index; _ } -> Reg.Local index
-      | Incoming index -> Reg.Incoming (word_index_to_byte_offset index)
-      | Outgoing index -> Reg.Outgoing (word_index_to_byte_offset index)
-      | Domainstate index -> Reg.Domainstate (word_index_to_byte_offset index)
+      | Incoming { index } -> Reg.Incoming (word_index_to_byte_offset index)
+      | Outgoing { index } -> Reg.Outgoing (word_index_to_byte_offset index)
+      | Domainstate { index } ->
+        Reg.Domainstate (word_index_to_byte_offset index)
+
+    let unknown_reg_class = -1
 
     let reg_class_lossy t =
       match t with
       | Local { reg_class; _ } -> reg_class
-      | Incoming _ | Outgoing _ | Domainstate _ -> -1
+      | Incoming _ | Outgoing _ | Domainstate _ -> unknown_reg_class
   end
 
   type t =
@@ -91,12 +108,30 @@ module Location = struct
       ~unknown:(fun _ -> failwith "unreachable")
       ppf (to_loc_lossy t)
 
-  let compare (t1 : t) (t2 : t) : int = compare t1 t2
+  let compare (t1 : t) (t2 : t) : int = Stdlib.compare t1 t2
 
   let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
 
-module Reg_id = struct
+module Reg_id : sig
+  type t =
+    | Physical of { location : Location.t }
+    | Named of { stamp : int }
+
+  val compare : t -> t -> int
+
+  val of_reg : Reg.t -> t
+
+  val to_loc_lossy : t -> Reg.location
+
+  val print :
+    typ:Cmm.machtype_component ->
+    raw_name:Reg.Raw_name.t ->
+    spill:bool ->
+    Format.formatter ->
+    t ->
+    unit
+end = struct
   type t =
     | Physical of { location : Location.t }
     | Named of { stamp : int }
@@ -118,7 +153,7 @@ module Reg_id = struct
     | Physical { location } -> Location.to_loc_lossy location
     | Named _ -> Reg.Unknown
 
-  let compare (t1 : t) (t2 : t) = compare t1 t2
+  let compare (t1 : t) (t2 : t) = Stdlib.compare t1 t2
 
   let print ~typ ~raw_name ~spill ppf t =
     match t with
@@ -129,7 +164,26 @@ module Reg_id = struct
         { Reg.dummy with raw_name; stamp; typ; spill }
 end
 
-module Register = struct
+module Register : sig
+  module For_print : sig
+    type t
+  end
+
+  type t =
+    { reg_id : Reg_id.t;
+      for_print : For_print.t
+    }
+
+  val create : Reg.t -> t
+
+  val to_dummy_reg : t -> Reg.t
+
+  val compare : t -> t -> int
+
+  val equal : t -> t -> bool
+
+  val print : Format.formatter -> t -> unit
+end = struct
   module For_print = struct
     type t =
       { raw_name : Reg.Raw_name.t;
@@ -186,11 +240,25 @@ module Instruction = struct
     }
 end
 
-module Description = struct
+module Description : sig
+  type t
+
+  val find_basic : t -> basic instruction -> basic Instruction.t
+
+  val find_terminator : t -> terminator instruction -> terminator Instruction.t
+
+  val create : Cfg_with_layout.t -> t
+
+  val verify : t -> Cfg_with_layout.t -> unit
+end = struct
   type t =
     { instructions : (int, basic Instruction.t) Hashtbl.t;
       terminators : (int, terminator Instruction.t) Hashtbl.t
     }
+
+  let find_basic t instr = Hashtbl.find t.instructions instr.id
+
+  let find_terminator t instr = Hashtbl.find t.terminators instr.id
 
   let make_instruction_helper t f instr =
     f
@@ -447,9 +515,40 @@ let print_reg_as_loc ppf reg =
     ~unknown:(fun ppf -> Format.fprintf ppf "<Unknown>")
     ppf reg.Reg.loc
 
-module Domain = struct
+module Domain : sig
+  include Cfg_dataflow.Backward_domain
+
+  module Error : sig
+    type t
+
+    module Tag : sig
+      type 'a t =
+        | Terminator : terminator t
+        | Basic : basic t
+    end
+
+    val print : Format.formatter -> t -> unit
+  end
+
+  val rename_location : t -> loc_instr:_ instruction -> t
+
+  val rename_register : t -> reg_instr:_ Instruction.t -> t
+
+  val append_equations :
+    t ->
+    tag:'a Error.Tag.t ->
+    exn:t option ->
+    reg_instr:'a Instruction.t ->
+    loc_instr:'a instruction ->
+    destroyed:Location.t array ->
+    t
+
+  val print : Format.formatter -> t -> unit
+
+  val to_result : t -> (Equation_set.t, Error.t) Result.t
+end = struct
   module Error = struct
-    type 'a t =
+    type 'a unpacked =
       { equations : Equation_set.t;
         exn_equations : Equation_set.t option;
         reg_instr : 'a Instruction.t;
@@ -463,11 +562,11 @@ module Domain = struct
         | Basic : basic t
     end
 
-    type packed =
-      | Terminator : terminator t -> packed
-      | Basic : basic t -> packed
+    type t =
+      | Terminator : terminator unpacked -> t
+      | Basic : basic unpacked -> t
 
-    let print_packed ppf (error : packed) =
+    let print ppf (error : t) =
       let message, equations, exn_equations, id, reg_instr, loc_instr =
         match error with
         | Basic { loc_instr; reg_instr; equations; exn_equations; message } ->
@@ -512,12 +611,12 @@ module Domain = struct
       [error] correspond to values from the point of error. *)
   type t =
     { equations : Equation_set.t;
-      error : Error.packed option
+      error : Error.t option
     }
 
   let bot = { equations = Equation_set.empty; error = None }
 
-  let compare = compare
+  let compare (t1 : t) (t2 : t) = Stdlib.compare t1 t2
 
   let join t_old t_suc =
     match t_old, t_suc with
@@ -671,15 +770,11 @@ module Transfer (Desc_val : Description_value) = struct
       (* This corresponds to a noop move where the source and target registers
          have the same locations. *)
       assert (not (Cfg.can_raise_basic instr.desc));
-      let instr_before =
-        Hashtbl.find Desc_val.description.instructions instr.id
-      in
+      let instr_before = Description.find_basic Desc_val.description instr in
       Domain.rename_register t ~reg_instr:instr_before
     | _ ->
       let exn = if Cfg.can_raise_basic instr.desc then Some exn else None in
-      let instr_before =
-        Hashtbl.find Desc_val.description.instructions instr.id
-      in
+      let instr_before = Description.find_basic Desc_val.description instr in
       Domain.append_equations t ~tag:Basic ~exn ~reg_instr:instr_before
         ~loc_instr:instr
         ~destroyed:
@@ -687,7 +782,7 @@ module Transfer (Desc_val : Description_value) = struct
 
   let terminator t ~exn instr =
     let exn = if Cfg.can_raise_terminator instr.desc then Some exn else None in
-    let instr_before = Hashtbl.find Desc_val.description.terminators instr.id in
+    let instr_before = Description.find_terminator Desc_val.description instr in
     Domain.append_equations t ~tag:Terminator ~exn ~reg_instr:instr_before
       ~loc_instr:instr
       ~destroyed:
@@ -717,13 +812,13 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
         (fun ppf instr ->
           match instr with
           | `Basic instr -> (
-            match Hashtbl.find_opt desc.Description.instructions instr.id with
-            | Some prev_instr ->
+            match Description.find_basic desc instr with
+            | prev_instr ->
               let instr = Instruction.to_prealloc ~alloced:instr prev_instr in
               Cfg.print_basic ppf instr
-            | None -> ())
+            | exception Not_found -> ())
           | `Terminator ti ->
-            let prev_ti = Hashtbl.find desc.Description.terminators ti.id in
+            let prev_ti = Description.find_terminator desc ti in
             let ti = Instruction.to_prealloc ~alloced:ti prev_ti in
             Cfg.print_terminator ppf ti) ]
     ~annotate_block_end:(fun ppf block ->
@@ -734,7 +829,7 @@ let save_as_dot_with_equations ~desc ~res_instr ~res_block ?filename cfg msg =
 module Error = struct
   module Source = struct
     type t =
-      | At_instruction of Domain.Error.packed
+      | At_instruction of Domain.Error.t
       | At_entrypoint of
           { message : string;
             equations : Equation_set.t;
@@ -743,7 +838,7 @@ module Error = struct
 
     let print (ppf : Format.formatter) (t : t) : unit =
       match t with
-      | At_instruction error -> Domain.Error.print_packed ppf error
+      | At_instruction error -> Domain.Error.print ppf error
       | At_entrypoint { message; equations; fun_args } ->
         Format.fprintf ppf "Bad equations at entry point, reason: %s\n" message;
         Format.fprintf ppf "Equations: %a\n" Equation_set.print equations;
@@ -827,12 +922,12 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
     in
     Cfg_dataflow.Instr.Tbl.find res_instr entry_id
   in
-  match result with
-  | { error = None; equations } ->
+  match Domain.to_result result with
+  | Ok equations ->
     verify_entrypoint equations cfg
     |> Result.map_error (fun source : Error.t ->
            { source; res_instr; res_block; desc; cfg })
-  | { error = Some error; _ } ->
+  | Error error ->
     Error { source = At_instruction error; res_instr; res_block; desc; cfg }
 
 let verify_exn desc cfg =
