@@ -377,7 +377,7 @@ let can_raise_operation : operation -> bool = function
   | Floatofint -> false
   | Intoffloat -> false
   | Probe _ -> true
-  | Probe_is_enabled _ -> true
+  | Probe_is_enabled _ -> false
   | Specific op -> Arch.operation_can_raise op
   | Opaque -> false
   | Name_for_debugger _ -> false
@@ -397,9 +397,9 @@ let can_raise_basic : basic -> bool = function
    moment, which we might want to reconsider later. *)
 let is_pure_terminator desc =
   match (desc : terminator) with
-  | Raise _ | Call_no_return _ | Tailcall _ -> false
+  | Raise _ | Call_no_return _ | Tailcall _ | Return -> false
   | Never | Always _ | Parity_test _ | Truth_test _ | Float_test _ | Int_test _
-  | Switch _ | Return ->
+  | Switch _ ->
     (* CR gyorsh: fix for memory operands *)
     true
 
@@ -435,10 +435,10 @@ let is_pure_operation : operation -> bool = function
 let is_pure_basic : basic -> bool = function
   | Op op -> is_pure_operation op
   | Call _ -> false
-  | Reloadretaddr -> true
-  | Pushtrap _ -> true
-  | Poptrap -> true
-  | Prologue -> true
+  | Reloadretaddr -> false
+  | Pushtrap _ -> false
+  | Poptrap -> false
+  | Prologue -> false
 
 let is_noop_move instr =
   match instr.desc with
