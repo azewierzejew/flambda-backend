@@ -261,7 +261,7 @@ module Description = struct
 
   let verify_instr ~seen_ids ~is_regalloc_specific instructions instr =
     let id = instr.id in
-    if Hashtbl.find_opt seen_ids id |> Option.is_some
+    if Hashtbl.mem seen_ids id
     then
       Cfg_regalloc_utils.fatal
         "Duplicate instruction no. %d while checking post-allocation \
@@ -362,7 +362,7 @@ end = struct
 
   include Set.Make (Equation)
 
-  let compatibile_one ~reg ~loc t =
+  let compatible_one ~reg ~loc t =
     let res = ref (Ok ()) in
     iter
       (fun ((eq_reg, eq_loc) as eq) ->
@@ -380,7 +380,7 @@ end = struct
     !res
 
   let remove_result ~reg_res ~loc_res t =
-    let compatibile = ref (Ok ()) in
+    let compatible = ref (Ok ()) in
     Array.iter2
       (fun reg loc ->
         compatibile
@@ -417,14 +417,14 @@ end = struct
 
   let rename_loc ~arg ~res t =
     map
-      (fun (stamp, loc) ->
-        if Location.equal loc res then stamp, arg else stamp, loc)
+      (fun ((stamp, loc) as eq) ->
+        if Location.equal loc res then stamp, arg else eq)
       t
 
   let rename_reg ~arg ~res t =
     map
-      (fun (eq_reg, loc) ->
-        if Register.equal eq_reg res then arg, loc else eq_reg, loc)
+      (fun ((eq_reg, loc) as eq) ->
+        if Register.equal eq_reg res then arg, loc else eq)
       t
 
   let print ppf t =
@@ -437,7 +437,7 @@ end = struct
 end
 
 let extract_loc_arr loc_arr =
-  Array.map (fun loc_reg -> Location.of_reg_exn loc_reg) loc_arr
+  Array.map Location.of_reg_exn loc_arr
 
 module type Description_value = sig
   val description : Description.t
@@ -589,7 +589,7 @@ module Domain = struct
     in
     let exn =
       (* If instruction can't raise [Option.is_none exn] then use empty set of
-         instructions as that's the same as skipping the step. *)
+         equations as that's the same as skipping the step. *)
       Option.value exn ~default:bot
       |> to_result
       (* Handle this here because in [exception_] we don't have enough
@@ -668,7 +668,7 @@ module Transfer (Desc_val : Description_value) = struct
     | Op Move
       when Array.length instr.arg = 1
            && Array.length instr.res = 1
-           && instr.arg.(0).loc = instr.res.(0).loc ->
+           && Reg.same_loc instr.arg.(0).loc instr.res.(0).loc ->
       (* This corresponds to a noop move where the source and target registers
          have the same locations. *)
       assert (not (Cfg.can_raise_basic instr.desc));
@@ -746,7 +746,7 @@ module Error = struct
       match t with
       | At_instruction error -> Domain.Error.print_packed ppf error
       | At_entrypoint { message; equations; fun_args } ->
-        Format.fprintf ppf "Bad eqauations at entry point, reason: %s\n" message;
+        Format.fprintf ppf "Bad equations at entry point, reason: %s\n" message;
         Format.fprintf ppf "Equations: %a\n" Equation_set.print equations;
         Format.fprintf ppf "Function arguments: %a\n" Printmach.regs fun_args;
         ()
@@ -773,7 +773,7 @@ module Error = struct
     in
     Format.fprintf ppf "Dumping cfg into %s ...\n" filename;
     save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename cfg
-      "vallidation_error";
+      "validation_error";
     Format.fprintf ppf "Dumped cfg into: %s\n" filename;
     ()
 end
