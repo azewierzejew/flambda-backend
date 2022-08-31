@@ -861,7 +861,7 @@ let test_loop ~loop_loc_first n =
     (Printf.sprintf "Check loop with %d locations" n)
     (fun () -> make_loop ~loop_loc_first n)
     ~exp_std:
-      "Validation failed: Bad eqauations at entry point, reason: Unsatisfiable \
+      "Validation failed: Bad equations at entry point, reason: Unsatisfiable \
        equations when removing result equations. Equation R[%rdi]=%rbx. Result \
        reg: R[%rbx], result location: %rbx\n\
        Equations: R[%rax]=%rax R[%rdi]=%rbx R[%rdi]=%rdi\n\
