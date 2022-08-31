@@ -313,6 +313,7 @@ let equal_location left right =
     false
 
 let same_loc left right =
+  (* CR azewierzejew for xclerc: Shouldn't this also compare register class for Local stack? *)
   equal_location left.loc right.loc
 
 let same left right =

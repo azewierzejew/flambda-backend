@@ -306,14 +306,14 @@ module Description = struct
         let can_be_removed =
           match instr.Instruction.desc with Prologue -> true | _ -> false
         in
-        if Hashtbl.find_opt seen_ids id |> Option.is_none && not can_be_removed
+        if (not (Hashtbl.mem seen_ids id)) && not can_be_removed
         then
           Cfg_regalloc_utils.fatal
             "Instruction no. %d was deleted by register allocator" id)
       t.instructions;
     Hashtbl.iter
       (fun id _ ->
-        if Hashtbl.find_opt seen_ids id |> Option.is_none
+        if not (Hashtbl.mem seen_ids id)
         then
           Cfg_regalloc_utils.fatal
             "Terminator no. %d was deleted by register allocator" id)
@@ -383,10 +383,10 @@ end = struct
     let compatible = ref (Ok ()) in
     Array.iter2
       (fun reg loc ->
-        compatibile
-          := Result.bind !compatibile (fun () -> compatibile_one ~reg ~loc t))
+        compatible
+          := Result.bind !compatible (fun () -> compatible_one ~reg ~loc t))
       reg_res loc_res;
-    Result.bind !compatibile (fun () ->
+    Result.bind !compatible (fun () ->
         let t = ref t in
         Array.iter2 (fun reg loc -> t := remove (reg, loc) !t) reg_res loc_res;
         Ok !t)
@@ -436,8 +436,7 @@ end = struct
       t
 end
 
-let extract_loc_arr loc_arr =
-  Array.map Location.of_reg_exn loc_arr
+let extract_loc_arr loc_arr = Array.map Location.of_reg_exn loc_arr
 
 module type Description_value = sig
   val description : Description.t
@@ -668,7 +667,7 @@ module Transfer (Desc_val : Description_value) = struct
     | Op Move
       when Array.length instr.arg = 1
            && Array.length instr.res = 1
-           && Reg.same_loc instr.arg.(0).loc instr.res.(0).loc ->
+           && Reg.same_loc instr.arg.(0) instr.res.(0) ->
       (* This corresponds to a noop move where the source and target registers
          have the same locations. *)
       assert (not (Cfg.can_raise_basic instr.desc));
