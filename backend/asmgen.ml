@@ -382,7 +382,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
         ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run)
     | true, _ | false, Upstream ->
       fd
-      ++ Profile.record ~accumulate:true "linscan" (fun fd ->
+      ++ Profile.record ~accumulate:true "default" (fun fd ->
         let res =
           fd
           ++ Profile.record ~accumulate:true "liveness" liveness

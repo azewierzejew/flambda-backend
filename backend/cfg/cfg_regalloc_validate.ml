@@ -454,9 +454,11 @@ end = struct
         if reg_eq <> loc_eq
         then (
           Format.fprintf Format.str_formatter
-            "Unsatisfiable equations when removing result equations. Equation \
-             %a. Result reg: %a, result location: %a"
-            Equation.print eq Register.print reg Location.print loc;
+            "Unsatisfiable equations when removing result equations.\n\
+             Existing equation has to agree one 0 or 2 sides (cannot on \
+             exactly 1) with the removed equation.\n\
+             Existing equation %a.\n\
+             Removed equation: %a." Equation.print eq Equation.print (reg, loc);
           let message = Format.flush_str_formatter () in
           raise (Verification_failed message)))
       t
@@ -477,11 +479,13 @@ end = struct
       Array.iter
         (fun destroyed_loc ->
           iter
-            (fun (_stamp, live_loc) ->
+            (fun (live_reg, live_loc) ->
               if destroyed_loc = live_loc
               then (
                 Format.fprintf Format.str_formatter
-                  "Destroying a live location %a" Location.print live_loc;
+                  "Destroying a location %a in which a live register %a is \
+                   stored"
+                  Location.print live_loc Register.print live_reg;
                 let message = Format.flush_str_formatter () in
                 raise (Verification_failed message)))
             t)
@@ -594,18 +598,19 @@ end = struct
             `Terminator (Instruction.to_prealloc ~alloced:loc_instr reg_instr),
             `Terminator loc_instr )
       in
-      Format.fprintf ppf "Check failed in instr %d:\n" id;
-      Format.fprintf ppf "pre: %a\n" Cfg.print_instruction reg_instr;
-      Format.fprintf ppf "post: %a\n"
+      Format.fprintf ppf "CFG REGALLOC Check failed in instr %d:\n" id;
+      Format.fprintf ppf "Instruction's description before allocation: %a\n"
+        Cfg.print_instruction reg_instr;
+      Format.fprintf ppf "Instruction's description after allocation: %a\n"
         (Cfg.print_instruction' ~print_reg:print_reg_as_loc)
         loc_instr;
       Format.fprintf ppf "Message: %s\n" message;
-      Format.fprintf ppf "Equations at moment of error: [%a]\n"
+      Format.fprintf ppf "Live equations for the normal successor: [%a]\n"
         Equation_set.print equations;
       Option.iter
         (fun exn_equations ->
           Format.fprintf ppf
-            "Additional equations coming from the exception path: [%a]\n"
+            "Live equations for the exceptional successor: [%a]\n"
             Equation_set.print exn_equations)
         exn_equations;
       ()
@@ -713,7 +718,8 @@ end = struct
                          ~destroyed:(extract_loc_arr Proc.destroyed_at_raise)
                     |> Result.map_error (fun message ->
                            Printf.sprintf
-                             "While verifying destroyed at raise: %s" message)
+                             "While verifying locations destroyed at raise: %s"
+                             message)
                     |> wrap_error))
       (* If instruction can't raise [Option.is_none exn] then use empty set of
          equations as that's the same as skipping the step. *)
@@ -908,8 +914,8 @@ let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
          then Ok cfg
          else (
            Format.fprintf Format.str_formatter
-             "Equations present at entrypoint after removing parameter \
-              equations: [%a]"
+             "Some equations still present at entrypoint after removing \
+              parameter equations: [%a]"
              Equation_set.print equations;
            let message = Format.flush_str_formatter () in
            Error message))

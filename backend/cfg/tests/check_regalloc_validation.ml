@@ -864,8 +864,11 @@ let test_loop ~loop_loc_first n =
     (fun () -> make_loop ~loop_loc_first n)
     ~exp_std:
       "Validation failed: Bad equations at entry point, reason: Unsatisfiable \
-       equations when removing result equations. Equation R[%rdi]=%rbx. Result \
-       reg: R[%rbx], result location: %rbx\n\
+       equations when removing result equations.\n\
+       Existing equation has to agree one 0 or 2 sides (cannot on exactly 1) \
+       with the removed equation.\n\
+       Existing equation R[%rdi]=%rbx.\n\
+       Removed equation: R[%rbx]=%rbx.\n\
        Equations: R[%rax]=%rax R[%rdi]=%rbx R[%rdi]=%rdi\n\
        Function arguments: R/0[%rax] R/1[%rbx] R/2[%rdi]"
     ~exp_err:"";
