@@ -413,7 +413,7 @@ module Equation_set : sig
     (t, string) Result.t
 
   val verify_destroyed_locations :
-    destroyed:Location.t array -> t -> (unit, string) Result.t
+    destroyed:Location.t array -> t -> (t, string) Result.t
 
   val add_argument :
     reg_arg:Register.t array -> loc_arg:Location.t array -> t -> t
@@ -437,10 +437,16 @@ end = struct
       Format.fprintf ppf "%a=%a" Register.print r Location.print l
   end
 
+  exception Verification_failed of string
+
   include Set.Make (Equation)
 
+  let array_fold2 f acc arr1 arr2 =
+    let acc = ref acc in
+    Array.iter2 (fun v1 v2 -> acc := f !acc v1 v2) arr1 arr2;
+    !acc
+
   let compatible_one ~reg ~loc t =
-    let res = ref (Ok ()) in
     iter
       (fun ((eq_reg, eq_loc) as eq) ->
         let reg_eq = Register.equal eq_reg reg in
@@ -452,45 +458,39 @@ end = struct
              %a. Result reg: %a, result location: %a"
             Equation.print eq Register.print reg Location.print loc;
           let message = Format.flush_str_formatter () in
-          res := Error message))
-      t;
-    !res
+          raise (Verification_failed message)))
+      t
 
   let remove_result ~reg_res ~loc_res t =
-    let compatible = ref (Ok ()) in
-    Array.iter2
-      (fun reg loc ->
-        compatible
-          := Result.bind !compatible (fun () -> compatible_one ~reg ~loc t))
-      reg_res loc_res;
-    Result.bind !compatible (fun () ->
-        let t = ref t in
-        Array.iter2 (fun reg loc -> t := remove (reg, loc) !t) reg_res loc_res;
-        Ok !t)
+    try
+      Array.iter2 (fun reg loc -> compatible_one ~reg ~loc t) reg_res loc_res;
+      let t =
+        array_fold2 (fun t reg loc -> remove (reg, loc) t) t reg_res loc_res
+      in
+      Ok t
+    with Verification_failed message -> Error message
 
   let verify_destroyed_locations ~destroyed t =
     (* CR azewierzejew for azewierzejew: Add checking stack for stack_location
        other than Local. *)
-    Array.fold_left
-      (fun acc des_loc ->
-        Result.bind acc (fun () ->
-            fold
-              (fun (_stamp, loc) acc ->
-                Result.bind acc (fun () ->
-                    if des_loc <> loc
-                    then Ok ()
-                    else (
-                      Format.fprintf Format.str_formatter
-                        "Destroying a live location %a" Location.print des_loc;
-                      let message = Format.flush_str_formatter () in
-                      Error message)))
-              t (Ok ())))
-      (Ok ()) destroyed
+    try
+      Array.iter
+        (fun destroyed_loc ->
+          iter
+            (fun (_stamp, live_loc) ->
+              if destroyed_loc = live_loc
+              then (
+                Format.fprintf Format.str_formatter
+                  "Destroying a live location %a" Location.print live_loc;
+                let message = Format.flush_str_formatter () in
+                raise (Verification_failed message)))
+            t)
+        destroyed;
+      Ok t
+    with Verification_failed message -> Error message
 
   let add_argument ~reg_arg ~loc_arg t =
-    let t = ref t in
-    Array.iter2 (fun reg loc -> t := add (reg, loc) !t) reg_arg loc_arg;
-    !t
+    array_fold2 (fun t reg loc -> add (reg, loc) t) t reg_arg loc_arg
 
   let rename_loc ~arg ~res t =
     map
@@ -697,13 +697,27 @@ end = struct
         res
     in
     let exn =
+      exn
+      |> Option.map (fun exn ->
+             (* Handle the exceptional path specific conversions here because in
+                [exception_] we don't have enough information in order to give a
+                meaningful error message. *)
+             to_result exn
+             (* Remove the equality for [exn_bucket] if it exists. *)
+             |> bind (fun exn -> remove_exn_bucket exn |> wrap_error)
+             |> bind (fun equations ->
+                    (* Verify the destroyed registers for exceptional path
+                       only. *)
+                    equations
+                    |> Equation_set.verify_destroyed_locations
+                         ~destroyed:(extract_loc_arr Proc.destroyed_at_raise)
+                    |> Result.map_error (fun message ->
+                           Printf.sprintf
+                             "While verifying destroyed at raise: %s" message)
+                    |> wrap_error))
       (* If instruction can't raise [Option.is_none exn] then use empty set of
          equations as that's the same as skipping the step. *)
-      Option.value exn ~default:bot
-      |> to_result
-      (* Handle this here because in [exception_] we don't have enough
-         information in order to give a meaningful error message. *)
-      |> bind (fun exn -> remove_exn_bucket exn |> wrap_error)
+      |> Option.value ~default:(to_result bot)
     in
     let res =
       to_result t
@@ -722,7 +736,6 @@ end = struct
              (* Verify the destroyed registers (including the exceptional
                 path). *)
              Equation_set.verify_destroyed_locations ~destroyed equations
-             |> Result.map (fun () -> equations)
              |> wrap_error)
       |> Result.map (fun equations ->
              (* Add all eqations for the arguments. *)
