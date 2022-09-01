@@ -108,14 +108,16 @@ end = struct
       ~unknown:(fun _ -> failwith "unreachable")
       ppf (to_loc_lossy t)
 
-  let compare (t1 : t) (t2 : t) : int = Stdlib.compare t1 t2
+  let compare (t1 : t) (t2 : t) : int =
+    (* CR-someday azewierzejew: Implement proper comparison. *)
+    Stdlib.compare t1 t2
 
   let equal (t1 : t) (t2 : t) : bool = compare t1 t2 = 0
 end
 
 module Reg_id : sig
   type t =
-    | Physical of { location : Location.t }
+    | Preassigned of { location : Location.t }
     | Named of { stamp : int }
 
   val compare : t -> t -> int
@@ -133,31 +135,33 @@ module Reg_id : sig
     unit
 end = struct
   type t =
-    | Physical of { location : Location.t }
+    | Preassigned of { location : Location.t }
     | Named of { stamp : int }
 
   let of_reg (reg : Reg.t) =
     let loc = Location.of_reg reg in
-    if Option.is_some loc <> Reg.is_phys reg
+    if Option.is_some loc <> Reg.is_preassigned reg
     then
       Cfg_regalloc_utils.fatal
         "Mismatch between register having location (%b) and register being a \
-         physical register (%b)"
-        (Option.is_some loc) (Reg.is_phys reg);
+         preassigned register (%b)"
+        (Option.is_some loc) (Reg.is_preassigned reg);
     match loc with
-    | Some location -> Physical { location }
+    | Some location -> Preassigned { location }
     | None -> Named { stamp = reg.stamp }
 
   let to_loc_lossy t =
     match t with
-    | Physical { location } -> Location.to_loc_lossy location
+    | Preassigned { location } -> Location.to_loc_lossy location
     | Named _ -> Reg.Unknown
 
-  let compare (t1 : t) (t2 : t) = Stdlib.compare t1 t2
+  let compare (t1 : t) (t2 : t) =
+    (* CR-someday azewierzejew: Implement proper comparison. *)
+    Stdlib.compare t1 t2
 
   let print ~typ ~raw_name ~spill ppf t =
     match t with
-    | Physical { location } ->
+    | Preassigned { location } ->
       Format.fprintf ppf "R[%a]" Location.print location
     | Named { stamp } ->
       Format.fprintf ppf "%a" Printmach.reg
@@ -318,10 +322,10 @@ end = struct
             "The instruction's no. %d %s is still unknown after allocation" id
             name
         | Named { stamp = _ }, _ -> ()
-        | Physical { location = l1 }, Some l2 when Location.equal l1 l2 -> ()
-        | Physical { location = prev_loc }, Some new_loc ->
+        | Preassigned { location = l1 }, Some l2 when Location.equal l1 l2 -> ()
+        | Preassigned { location = prev_loc }, Some new_loc ->
           Cfg_regalloc_utils.fatal
-            "The instruction's no. %d %s has changed physical register \
+            "The instruction's no. %d %s has changed preassigned register's \
              location from %a to %a"
             id name Location.print prev_loc Location.print new_loc)
       reg_arr loc_arr;
@@ -616,7 +620,9 @@ end = struct
 
   let bot = { equations = Equation_set.empty; error = None }
 
-  let compare (t1 : t) (t2 : t) = Stdlib.compare t1 t2
+  let compare (t1 : t) (t2 : t) =
+    (* CR-someday azewierzejew: Implement proper comparison. *)
+    Stdlib.compare t1 t2
 
   let join t_old t_suc =
     match t_old, t_suc with
@@ -659,7 +665,7 @@ end = struct
     let reg = Register.create phys_reg in
     let loc =
       match reg.reg_id with
-      | Physical { location } -> location
+      | Preassigned { location } -> location
       | Named _ -> failwith "unreachable"
     in
     Equation_set.remove_result equations ~reg_res:[| reg |] ~loc_res:[| loc |]

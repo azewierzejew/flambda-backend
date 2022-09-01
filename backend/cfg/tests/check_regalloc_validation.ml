@@ -14,7 +14,9 @@ module Instruction = struct
         (fun (r : Reg.t) ->
           { r with
             loc =
-              (if remove_locs && not (Reg.is_phys r) then Unknown else r.loc)
+              (if remove_locs && not (Reg.is_preassigned r)
+              then Unknown
+              else r.loc)
           })
         arr
     in
@@ -539,8 +541,8 @@ let () =
       cfg1, cfg2)
     ~exp_std:"fatal exception raised when validating description"
     ~exp_err:
-      ">> Fatal error: The instruction's no. 22 result has changed physical \
-       register location from %rdi to %rbx"
+      ">> Fatal error: The instruction's no. 22 result has changed preassigned \
+       register's location from %rdi to %rbx"
 
 let () =
   check "Duplicate instruction found when validating description"
