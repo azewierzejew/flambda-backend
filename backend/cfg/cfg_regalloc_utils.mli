@@ -4,7 +4,9 @@ module Array : module type of ArrayLabels
 
 module List : module type of ListLabels
 
-val regalloc_debug : bool
+val bool_of_env : string -> bool
+
+val validator_debug : bool
 
 val on_fatal : f:(unit -> unit) -> unit
 

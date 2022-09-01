@@ -295,8 +295,13 @@ end = struct
 
   let create cfg =
     Cfg_regalloc_utils.precondition cfg;
-    if Cfg_regalloc_utils.regalloc_debug
+    if Cfg_regalloc_utils.validator_debug
     then
+      (* CR-someday: We don't save the file with [fun_name] in the filename
+         because there is an appended stamp that is fragile and is annoying when
+         testing. Currently it's not a problem because we abort the build
+         whenever register allocation fails but if there was a fallback mode
+         then the interesting files would be instantly overwritten. *)
       Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
         "before_allocation_before_validation";
     let seen_ids = Hashtbl.create 0 in
@@ -900,8 +905,13 @@ let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
 
 let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
     (Cfg_with_layout.t, Error.t) Result.t =
-  if Cfg_regalloc_utils.regalloc_debug
+  if Cfg_regalloc_utils.validator_debug
   then
+    (* CR-someday: We don't save the file with [fun_name] in the filename
+       because there is an appended stamp that is fragile and is annoying when
+       testing. Currently it's not a problem because we abort the build whenever
+       register allocation fails but if there was a fallback mode then the
+       interesting files would be instantly overwritten. *)
     Cfg_with_layout.save_as_dot
       ~annotate_instr:[Cfg.print_instruction' ~print_reg:print_reg_as_loc]
       ~filename:"after.dot" cfg "after_allocation_before_validation";
@@ -914,8 +924,13 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
       ~map:Check_backwards.Both ()
     |> Result.get_ok
   in
-  if Cfg_regalloc_utils.regalloc_debug
+  if Cfg_regalloc_utils.validator_debug
   then
+    (* CR-someday: We don't save the file with [fun_name] in the filename
+       because there is an appended stamp that is fragile and is annoying when
+       testing. Currently it's not a problem because we abort the build whenever
+       register allocation fails but if there was a fallback mode then the
+       interesting files would be instantly overwritten. *)
     save_as_dot_with_equations ~desc ~res_instr ~res_block ~filename:"annot.dot"
       cfg "after_allocation_after_validation";
   let result =

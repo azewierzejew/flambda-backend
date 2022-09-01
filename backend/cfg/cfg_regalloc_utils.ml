@@ -4,9 +4,16 @@ module Array = ArrayLabels
 module List = ListLabels
 
 let bool_of_env env_var =
-  match Sys.getenv_opt env_var with Some "1" -> true | Some _ | None -> false
+  match Sys.getenv_opt env_var |> Option.map String.lowercase_ascii with
+  | Some ("1" | "true" | "on") -> true
+  | Some ("0" | "false" | "off") | None -> false
+  | Some var ->
+    Misc.fatal_errorf
+      "the %s variable is \"%s\" but should be one of: \"0\", \"1\", \"true\", \
+       \"false\", \"on\", \"off\""
+      env_var var
 
-let regalloc_debug = bool_of_env "REGALLOC_DEBUG"
+let validator_debug = bool_of_env "CFG_REGALLOC_VALIDATOR_DEBUG"
 
 let fatal_callback = ref (fun () -> ())
 
