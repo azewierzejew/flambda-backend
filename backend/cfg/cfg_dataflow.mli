@@ -55,23 +55,27 @@ module Forward
   Forward_S with type domain = D.t
 
 module type Backward_domain = sig
+  (* The domain should a bounded join-semilattice. For termination of the
+     dataflow there should be also a limit on the size of all possible
+     chains. *)
   type t
 
-  (** Value to use if a block didn't have any other assigned (similar to the
-      [init] argument in [run]) *)
+  (** The lowest value in the domain which is the "bound" of the bounded
+      join-semilattice. That is also an identity element of the [join]
+      operation. *)
   val bot : t
+
+  (** Join operator of the join-semilattice. This operation should be
+      associative, commutative and idempotent. *)
+  val join : t -> t -> t
+
+  (** Operator defined as ([less_equal x y] iff [equal (join x y) y]). Is
+      separate from [join] for efficiency. *)
+  val less_equal : t -> t -> bool
 
   val compare : t -> t -> int
   (* note: `compare` is an order that can be passed to e.g. `Map.Make` or
      `Set.Make`; it does not need to be compatible with `less_than`. *)
-
-  (** [join old_value successor_value] has to join the last known value for the
-      end of the block with an updated value from a successor. *)
-  val join : t -> t -> t
-
-  (** [less_equal new_value old_value] should return [true] if there is no need
-      to recompute results with the [new_value]. *)
-  val less_equal : t -> t -> bool
 
   val to_string : t -> string
 end
