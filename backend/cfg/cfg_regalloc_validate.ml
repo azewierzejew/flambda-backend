@@ -499,9 +499,14 @@ end = struct
   let compatible_one ~reg ~loc t =
     iter
       (fun ((eq_reg, eq_loc) as eq) ->
+        (* This check corresponds to simplified check that "(x, l) is compatible
+           with E" from chapter 3.2 section "Unsatisfiability and Overlap" from
+           the paper [1], where "x" is [reg] and "l" is [loc]. Because we don't
+           consider overlap at all, the condition simplifies to [(x' = x && l' =
+           l) || (x' <> x && l' <> l)]. *)
         let reg_eq = Register.equal eq_reg reg in
         let loc_eq = Location.equal eq_loc loc in
-        if reg_eq <> loc_eq
+        if not (Bool.equal reg_eq loc_eq)
         then (
           Format.fprintf Format.str_formatter
             "Unsatisfiable equations when removing result equations.\n\
