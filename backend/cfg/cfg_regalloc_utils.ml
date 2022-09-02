@@ -40,6 +40,11 @@ module Instruction = struct
   module IdMap = MoreLabels.Map.Make (Int)
 end
 
+let first_instruction_id (block : Cfg.basic_block) : int =
+  match block.body with
+  | [] -> block.terminator.id
+  | first_instr :: _ -> first_instr.id
+
 (* CR xclerc for xclerc: in destroyed_at_xyz, lift the constants? *)
 
 (* CR xclerc for xclerc: reimplement destroyed_at_xyz here, to avoid the call to

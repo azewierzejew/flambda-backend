@@ -304,9 +304,19 @@ end = struct
          then the interesting files would be instantly overwritten. *)
       Cfg_with_layout.save_as_dot ~filename:"before.dot" cfg
         "before_allocation_before_validation";
-    let seen_ids = Hashtbl.create 0 in
+    let basic_count, terminator_count =
+      Cfg_with_layout.fold_instructions cfg
+        ~instruction:(fun (basic_count, terminator_count) _ ->
+          basic_count + 1, terminator_count)
+        ~terminator:(fun (basic_count, terminator_count) _ ->
+          basic_count, terminator_count + 1)
+        ~init:(0, 0)
+    in
+    let seen_ids = Hashtbl.create (basic_count + terminator_count) in
     let t =
-      { instructions = Hashtbl.create 0; terminators = Hashtbl.create 0 }
+      { instructions = Hashtbl.create basic_count;
+        terminators = Hashtbl.create terminator_count
+      }
     in
     Cfg_with_layout.iter_instructions cfg
       ~instruction:(make_instruction_helper t (add_instr ~seen_ids))
@@ -348,6 +358,8 @@ end = struct
     match Hashtbl.find_opt instructions id, is_regalloc_specific with
     (* The instruction was present before. *)
     | Some old_instr, false ->
+      (* CR-someday azewierzejew: Avoid using polymrphic compare. That is tricky
+         because here we can compare both [basic] and [terminator]. *)
       if instr.desc <> old_instr.Instruction.desc
       then
         Cfg_regalloc_utils.fatal "The instruction's no. %d desc was changed" id;
@@ -788,6 +800,16 @@ end
 module Transfer (Desc_val : Description_value) = struct
   type domain = Domain.t
 
+  let[@inline] transfer_generic (type a) (tag : a Domain.Error.Tag.t)
+      ~(find_description : Description.t -> a instruction -> a Instruction.t)
+      ~(can_raise : a -> bool) ~(destroyed_at : a -> Reg.t array) :
+      domain -> exn:domain -> a instruction -> domain =
+   fun t ~exn instr ->
+    let exn = if can_raise instr.desc then Some exn else None in
+    let instr_before = find_description Desc_val.description instr in
+    Domain.append_equations t ~tag ~exn ~reg_instr:instr_before ~loc_instr:instr
+      ~destroyed:(destroyed_at instr.desc |> extract_loc_arr)
+
   let basic t ~exn instr =
     match instr.desc with
     | Op (Spill | Reload) ->
@@ -803,21 +825,17 @@ module Transfer (Desc_val : Description_value) = struct
       let instr_before = Description.find_basic Desc_val.description instr in
       Domain.rename_register t ~reg_instr:instr_before
     | _ ->
-      let exn = if Cfg.can_raise_basic instr.desc then Some exn else None in
-      let instr_before = Description.find_basic Desc_val.description instr in
-      Domain.append_equations t ~tag:Basic ~exn ~reg_instr:instr_before
-        ~loc_instr:instr
-        ~destroyed:
-          (Cfg_regalloc_utils.destroyed_at_basic instr.desc |> extract_loc_arr)
+      transfer_generic Domain.Error.Tag.Basic
+        ~find_description:Description.find_basic ~can_raise:Cfg.can_raise_basic
+        ~destroyed_at:Cfg_regalloc_utils.destroyed_at_basic t ~exn instr
 
   let terminator t ~exn instr =
-    let exn = if Cfg.can_raise_terminator instr.desc then Some exn else None in
-    let instr_before = Description.find_terminator Desc_val.description instr in
-    Domain.append_equations t ~tag:Terminator ~exn ~reg_instr:instr_before
-      ~loc_instr:instr
-      ~destroyed:
-        (Cfg_regalloc_utils.destroyed_at_terminator instr.desc
-        |> extract_loc_arr)
+    (* CR-soon azewierzejew: This is kind of fragile for [Tailcall (Self _)]
+       because that instruction doesn't strictly adhere to generic semantics. *)
+    transfer_generic Domain.Error.Tag.Terminator
+      ~find_description:Description.find_terminator
+      ~can_raise:Cfg.can_raise_terminator
+      ~destroyed_at:Cfg_regalloc_utils.destroyed_at_terminator t ~exn instr
 
   (* This should remove the equations for the exception value, but we do that in
      [Domain.append_equations] because there we have more information to give if
@@ -955,11 +973,7 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
   let result =
     let cfg = Cfg_with_layout.cfg cfg in
     let entry_block = Cfg.entry_label cfg |> Cfg.get_block_exn cfg in
-    let entry_id =
-      match entry_block.body with
-      | [] -> entry_block.terminator.id
-      | instr :: _ -> instr.id
-    in
+    let entry_id = Cfg_regalloc_utils.first_instruction_id entry_block in
     Cfg_dataflow.Instr.Tbl.find res_instr entry_id
   in
   match Domain.to_result result with
@@ -973,6 +987,4 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
 let verify_exn desc cfg =
   match verify desc cfg with
   | Ok cfg -> cfg
-  | Error error ->
-    Format.printf "%a%!" Error.dump error;
-    exit 1
+  | Error error -> Misc.fatal_errorf "%a%!" Error.dump error
