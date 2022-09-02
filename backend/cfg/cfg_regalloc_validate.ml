@@ -105,7 +105,7 @@ end = struct
 
   let print ppf t =
     Printmach.loc ~reg_class:(reg_class_lossy t)
-      ~unknown:(fun _ -> failwith "unreachable")
+      ~unknown:(fun _ -> assert false)
       ppf (to_loc_lossy t)
 
   let compare (t1 : t) (t2 : t) : int =
@@ -247,8 +247,12 @@ end
 module Description : sig
   type t
 
+  (** Will never raise for instructions from the verified CFG that aren't
+      regalloc specific (examples of regalloc specific instructions are [Spill]
+      and [Reload]). *)
   val find_basic : t -> basic instruction -> basic Instruction.t
 
+  (** Will never raise for a terminator from the verified CFG. *)
   val find_terminator : t -> terminator instruction -> terminator Instruction.t
 
   val create : Cfg_with_layout.t -> t
@@ -688,7 +692,7 @@ end = struct
     let loc =
       match reg.reg_id with
       | Preassigned { location } -> location
-      | Named _ -> failwith "unreachable"
+      | Named _ -> assert false
     in
     Equation_set.remove_result equations ~reg_res:[| reg |] ~loc_res:[| loc |]
     |> Result.map_error (fun message ->
