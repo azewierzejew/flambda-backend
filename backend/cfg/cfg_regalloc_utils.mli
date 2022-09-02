@@ -6,7 +6,7 @@ module List : module type of ListLabels
 
 val bool_of_env : string -> bool
 
-val regalloc_debug : bool
+val validator_debug : bool
 
 val on_fatal : f:(unit -> unit) -> unit
 
@@ -25,6 +25,8 @@ module Instruction : sig
 
   module IdMap : MoreLabels.Map.S with type key = id
 end
+
+val first_instruction_id : Cfg.basic_block -> int
 
 val destroyed_at_basic : Cfg.basic -> Reg.t array
 

@@ -386,7 +386,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
             let cfg_description = Profile.record ~accumulate:true "cfg_create_description" Cfg_regalloc_validate.Description.create cfg in
             cfg
             ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
-            ++ Profile.record ~accumulate:true "cfg_verify_description" (Cfg_regalloc_validate.verify_exn cfg_description)
+            ++ Profile.record ~accumulate:true "cfg_validate_description" (Cfg_regalloc_validate.run cfg_description)
           end else begin
             cfg
             ++ Profile.record ~accumulate:true "cfg_irc" Cfg_irc.run
@@ -397,7 +397,7 @@ let compile_fundecl ?dwarf ~ppf_dump fd_cmm =
         ++ Profile.record ~accumulate:true "cfg_to_linear" Cfg_to_linear.run)
     | true, _ | false, Upstream ->
       fd
-      ++ Profile.record ~accumulate:true "linscan" (fun fd ->
+      ++ Profile.record ~accumulate:true "default" (fun fd ->
         let res =
           fd
           ++ Profile.record ~accumulate:true "liveness" liveness

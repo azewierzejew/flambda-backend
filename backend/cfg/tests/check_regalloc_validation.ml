@@ -14,7 +14,9 @@ module Instruction = struct
         (fun (r : Reg.t) ->
           { r with
             loc =
-              (if remove_locs && not (Reg.is_phys r) then Unknown else r.loc)
+              (if remove_locs && not (Reg.is_preassigned r)
+              then Unknown
+              else r.loc)
           })
         arr
     in
@@ -392,7 +394,7 @@ let check name f ~exp_std ~exp_err =
                   raise Break_test
               in
               let res =
-                try Cfg_regalloc_validate.verify desc after
+                try Cfg_regalloc_validate.test desc after
                 with Misc.Fatal_error ->
                   Format.printf
                     "fatal exception raised when validating description";
@@ -539,8 +541,8 @@ let () =
       cfg1, cfg2)
     ~exp_std:"fatal exception raised when validating description"
     ~exp_err:
-      ">> Fatal error: The instruction's no. 22 result has changed physical \
-       register location from %rdi to %rbx"
+      ">> Fatal error: The instruction's no. 22 result has changed preassigned \
+       register's location from %rdi to %rbx"
 
 let () =
   check "Duplicate instruction found when validating description"
@@ -862,8 +864,11 @@ let test_loop ~loop_loc_first n =
     (fun () -> make_loop ~loop_loc_first n)
     ~exp_std:
       "Validation failed: Bad equations at entry point, reason: Unsatisfiable \
-       equations when removing result equations. Equation R[%rdi]=%rbx. Result \
-       reg: R[%rbx], result location: %rbx\n\
+       equations when removing result equations.\n\
+       Existing equation has to agree one 0 or 2 sides (cannot on exactly 1) \
+       with the removed equation.\n\
+       Existing equation R[%rdi]=%rbx.\n\
+       Removed equation: R[%rbx]=%rbx.\n\
        Equations: R[%rax]=%rax R[%rdi]=%rbx R[%rdi]=%rdi\n\
        Function arguments: R/0[%rax] R/1[%rbx] R/2[%rdi]"
     ~exp_err:"";

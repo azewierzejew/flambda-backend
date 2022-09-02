@@ -13,7 +13,7 @@ let bool_of_env env_var =
        \"false\", \"on\", \"off\""
       env_var var
 
-let regalloc_debug = bool_of_env "REGALLOC_DEBUG"
+let validator_debug = bool_of_env "CFG_REGALLOC_VALIDATOR_DEBUG"
 
 let fatal_callback = ref (fun () -> ())
 
@@ -39,6 +39,11 @@ module Instruction = struct
   module IdSet = MoreLabels.Set.Make (Int)
   module IdMap = MoreLabels.Map.Make (Int)
 end
+
+let first_instruction_id (block : Cfg.basic_block) : int =
+  match block.body with
+  | [] -> block.terminator.id
+  | first_instr :: _ -> first_instr.id
 
 (* CR xclerc for xclerc: in destroyed_at_xyz, lift the constants? *)
 

@@ -139,11 +139,11 @@ module type Backward_domain = sig
 
   val bot : t
 
-  val compare : t -> t -> int
-
   val join : t -> t -> t
 
   val less_equal : t -> t -> bool
+
+  val compare : t -> t -> int
 
   val to_string : t -> string
 end

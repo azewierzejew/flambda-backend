@@ -52,15 +52,13 @@ let build : State.t -> Cfg_with_layout.t -> liveness -> unit =
   Cfg.iter_blocks (Cfg_with_layout.cfg cfg_with_layout) ~f:(fun _label block ->
       if block.is_trap_handler
       then
-        let first_id =
-          match block.body with [] -> block.terminator.id | hd :: _ -> hd.id
-        in
+        let first_id = Cfg_regalloc_utils.first_instruction_id block in
         let live = Cfg_dataflow.Instr.Tbl.find liveness first_id in
         Reg.Set.iter
           (fun reg1 ->
             Array.iter Proc.destroyed_at_raise ~f:(fun reg2 ->
                 State.add_edge state reg1 reg2))
-          live.across)
+          (Reg.Set.remove Proc.loc_exn_bucket live.before))
 
 let make_work_list : State.t -> unit =
  fun state ->

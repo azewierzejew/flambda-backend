@@ -157,7 +157,7 @@ let anonymous t =
   | None -> true
   | Some _raw_name -> false
 
-let is_phys t = 
+let is_preassigned t = 
   match t.raw_name with 
   | R -> true
   | Anon | Var _ -> false
