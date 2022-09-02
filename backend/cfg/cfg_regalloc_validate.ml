@@ -997,7 +997,7 @@ let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
   |> Result.map_error (fun message : Error.Source.t ->
          At_entrypoint { message; equations; fun_args })
 
-let run (desc : Description.t) (cfg : Cfg_with_layout.t) :
+let test (desc : Description.t) (cfg : Cfg_with_layout.t) :
     (Cfg_with_layout.t, Error.t) Result.t =
   if Cfg_regalloc_utils.validator_debug
   then
@@ -1041,7 +1041,7 @@ let run (desc : Description.t) (cfg : Cfg_with_layout.t) :
   | Error error ->
     Error { source = At_instruction error; res_instr; res_block; desc; cfg }
 
-let run_exn desc cfg =
-  match run desc cfg with
+let run desc cfg =
+  match test desc cfg with
   | Ok cfg -> cfg
   | Error error -> Cfg_regalloc_utils.fatal "%a%!" Error.dump error

@@ -12,7 +12,7 @@ module Error : sig
   val print : Format.formatter -> t -> unit
 end
 
-val run :
+val test :
   Description.t -> Cfg_with_layout.t -> (Cfg_with_layout.t, Error.t) Result.t
 
-val run_exn : Description.t -> Cfg_with_layout.t -> Cfg_with_layout.t
+val run : Description.t -> Cfg_with_layout.t -> Cfg_with_layout.t

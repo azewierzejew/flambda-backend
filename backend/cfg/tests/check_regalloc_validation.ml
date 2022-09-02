@@ -394,7 +394,7 @@ let check name f ~exp_std ~exp_err =
                   raise Break_test
               in
               let res =
-                try Cfg_regalloc_validate.run desc after
+                try Cfg_regalloc_validate.test desc after
                 with Misc.Fatal_error ->
                   Format.printf
                     "fatal exception raised when validating description";
