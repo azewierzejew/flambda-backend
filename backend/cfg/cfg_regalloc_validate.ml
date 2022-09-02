@@ -979,6 +979,12 @@ let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
     ~reg_res:(Array.map Register.create fun_args)
     ~loc_res:(extract_loc_arr fun_args) equations
   |> bind (fun equations ->
+         (* This check is stronger than the one in the paper [1]. That because C
+            allows to start with uninitialized variables as it's explained in
+            chapter 3.2 and of section "Dataflow Analysis and Its Uses". Such a
+            thing is not allowed in OCaml. Therefore after removing all
+            equations for arguments the should be no additional equations
+            left. *)
          if Equation_set.is_empty equations
          then Ok cfg
          else (
