@@ -1,3 +1,15 @@
+(** This module implement validator for register allocation. The algorithm is
+    based on a paper by Silvain Rideau and Xavier Leroy titles "Validating
+    Register Allocation and Spilling" which can be found here
+
+    [1] https://xavierleroy.org/publi/validation-regalloc.pdf
+
+    The solution is substantially adapted to the different representation of CFG
+    that is used in this compiler. Most of the differences actually simpilify
+    the computation e.g. the arguments for a function call are specified as
+    preassigned registers and we don't have to reconstruct the argument
+    locations from the function type. *)
+
 [@@@ocaml.warning "+a-4-30-40-41-42"]
 
 include Cfg_intf.S
@@ -245,6 +257,19 @@ module Instruction = struct
 end
 
 module Description : sig
+  (** This snapshots the [desc], [arg] and [res] of all instructions in the CFG.
+      This snapshots layout of the basic blocks implicitly by comparing [desc]
+      of the terminators. This doesn't have information of where the basic
+      instructions were located in the graph.
+
+      With this the (register_before, location_after) pairs for results and
+      arguments can be reconstructed while only having the CFG after the
+      transformation.
+
+      Such a things doesn't exist in the paper [1] but that's because there they
+      have both CFG before and after transformation. Because the CFG here is
+      mutable we only see the state after. This description allows us to
+      reconstruct needed part's of the state before on the fly. *)
   type t
 
   (** Will never raise for instructions from the verified CFG that aren't
@@ -414,6 +439,9 @@ end = struct
 end
 
 module Equation_set : sig
+  (** This corresponds to the set of equations defined in section 3.2 of in the
+      paper [1]. The definition is simplified substantially because here none of
+      the locations (e.g. registers or stack) are allowed to overlap. *)
   type t
 
   val empty : t
@@ -422,6 +450,18 @@ module Equation_set : sig
 
   val union : t -> t -> t
 
+  val subset : t -> t -> bool
+
+  (** This corresponds to case (10) in Fig. 1 of the paper [1]. *)
+  val rename_loc : arg:Location.t -> res:Location.t -> t -> t
+
+  (** This corresponds to case (3) in Fig. 1 of the paper [1]. *)
+  val rename_reg : arg:Register.t -> res:Register.t -> t -> t
+
+  (** Calling [remove_result], [verify_destoyed_locations] and [add_argument] in
+      this order corresponds to case (7) in Fig. 1 of the paper [1]. This
+      implementation is also generalized for all cases not handled by
+      [rename_loc] or [rename_reg]. *)
   val remove_result :
     reg_res:Register.t array ->
     loc_res:Location.t array ->
@@ -433,10 +473,6 @@ module Equation_set : sig
 
   val add_argument :
     reg_arg:Register.t array -> loc_arg:Location.t array -> t -> t
-
-  val rename_loc : arg:Location.t -> res:Location.t -> t -> t
-
-  val rename_reg : arg:Register.t -> res:Register.t -> t -> t
 
   val is_empty : t -> bool
 
@@ -545,6 +581,13 @@ let print_reg_as_loc ppf reg =
     ppf reg.Reg.loc
 
 module Domain : sig
+  (** This type corresponds to the domain of the dataflow from the paper [1]. It
+      is represented as [(Ok equations)] corresponing to the set of equations
+      from the paper [1] or [(Error error)] which corresponds to the "top" from
+      the paper [1]. For the purposes of dataflow all [(Error error)] values are
+      equal even though the carried error can be different. That is because we
+      want to get an error information but if there are multiple errors we do
+      not care which one we see. *)
   include Cfg_dataflow.Backward_domain
 
   module Error : sig
@@ -559,10 +602,17 @@ module Domain : sig
     val print : Format.formatter -> t -> unit
   end
 
+  (** This corresponds to case (10) in Fig. 1 of the paper [1]. *)
   val rename_location : t -> loc_instr:_ instruction -> t
 
+  (** This corresponds to case (3) in Fig. 1 of the paper [1]. *)
   val rename_register : t -> reg_instr:_ Instruction.t -> t
 
+  (** This corresponds to case (7) in Fig. 1 of the paper [1] generalized for
+      all other cases not handled by [rename_location] or [rename_register]. We
+      have an additional parameter which is the equations for the exceptional
+      path successor which is not present in the paper [1] because exceptions
+      are not considered there. *)
   val append_equations :
     t ->
     tag:'a Error.Tag.t ->
@@ -574,6 +624,7 @@ module Domain : sig
 
   val print : Format.formatter -> t -> unit
 
+  (** Convert the domain value to its representation. *)
   val to_result : t -> (Equation_set.t, Error.t) Result.t
 end = struct
   module Error = struct
@@ -632,8 +683,8 @@ end = struct
       ()
   end
 
-  (** This type logically works as [(Equation_set.t, Error.packed) Result.t] but
-      in case there's an error we want to know the "last known equations" for a
+  (** This type logically works as [(Equation_set.t, Error.t) Result.t] but in
+      case there's an error we want to know the "last known equations" for a
       given instruction. Therefore [{equations; error = None}] corresponds to a
       [Ok equations] and [{equations; error = Some error}] corresponds to [Error
       error] where [equations] is biggest set of equations for a given
@@ -664,21 +715,19 @@ end = struct
       (* If there are no errors combine the equation sets. *)
       { equations = Equation_set.union eq_old eq_suc; error = None }
 
-  let less_equal t_new t_old =
-    match t_new, t_old with
+  let less_equal t1 t2 =
+    match t1, t2 with
     | _, { error = Some _; _ } ->
-      (* If the already known value is an error don't update results in order to
-         terminate quickly. *)
+      (* Error is the greatest element in the order so it's larger or equal to
+         every other element. *)
       true
     | { error = Some _; _ }, { error = None; _ } ->
-      (* If the new value is an error, always propagate. *)
+      (* Error is strictly greater than every non-error element so false.*)
       false
-    | ( { error = None; equations = eq_set_new },
-        { error = None; equations = eq_set_old } ) ->
-      (* When there are no errors don't propagate only if the set of equations
-         is exactly the same. There's no point in checking the inclusiveness of
-         the sets. *)
-      Equation_set.equal eq_set_new eq_set_old
+    | ( { error = None; equations = eq_set1 },
+        { error = None; equations = eq_set2 } ) ->
+      (* If neither of the value is an error then compare the equation sets. *)
+      Equation_set.subset eq_set1 eq_set2
 
   let to_string _ = failwith "[to_string] unimplemented"
 
