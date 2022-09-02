@@ -446,8 +446,6 @@ module Equation_set : sig
 
   val empty : t
 
-  val equal : t -> t -> bool
-
   val union : t -> t -> t
 
   val subset : t -> t -> bool
@@ -993,7 +991,7 @@ let verify_entrypoint (equations : Equation_set.t) (cfg : Cfg_with_layout.t) :
   |> Result.map_error (fun message : Error.Source.t ->
          At_entrypoint { message; equations; fun_args })
 
-let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
+let run (desc : Description.t) (cfg : Cfg_with_layout.t) :
     (Cfg_with_layout.t, Error.t) Result.t =
   if Cfg_regalloc_utils.validator_debug
   then
@@ -1037,7 +1035,7 @@ let verify (desc : Description.t) (cfg : Cfg_with_layout.t) :
   | Error error ->
     Error { source = At_instruction error; res_instr; res_block; desc; cfg }
 
-let verify_exn desc cfg =
-  match verify desc cfg with
+let run_exn desc cfg =
+  match run desc cfg with
   | Ok cfg -> cfg
-  | Error error -> Misc.fatal_errorf "%a%!" Error.dump error
+  | Error error -> Cfg_regalloc_utils.fatal "%a%!" Error.dump error
