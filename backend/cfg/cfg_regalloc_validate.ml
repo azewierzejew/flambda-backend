@@ -477,6 +477,27 @@ module Equation_set : sig
   val print : Format.formatter -> t -> unit
 end = struct
   module Equation = struct
+    (** The equations here contain a bit more than the paper [1] has. In the
+        said paper the equation is a named variable on one side and location on
+        the other side because moving arguments to the correct position before
+        call is done implicitly.
+
+        In our representation of CFG before the call [foo %rax] there is
+        explicit instruction [%rax := x]. Therefore the left-hand side of the
+        equation in our case is either [Named] or [Preassigned]. The equations
+        for [Preassigned { location }] are always expected to have exactly
+        [location] on the right-hand side.
+
+        It's possible to have very specific code with only no-op moves, spills
+        and reloads that breaks the previous assumption but there are multiple
+        soft assumption that prevent existance of such code. Result of
+        validation on such code is subject to change and shouldn't be relied
+        upon.
+
+        For that reason equations of form [Preassigned { location } = location]
+        give us implicitly a set of live preassigned locations. That verifies
+        that none of the preassigned locations are destroyed or assigning to the
+        preassigned location doesn't destroy a [Named] variable. *)
     type t = Register.t * Location.t
 
     let compare (r1, l1) (r2, l2) =
