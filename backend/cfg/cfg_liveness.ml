@@ -20,13 +20,6 @@ module Domain : Cfg_dataflow.Domain_S with type t = domain = struct
   let less_equal { before = left_before; across = _ }
       { before = right_before; across = _ } =
     Reg.Set.subset left_before right_before
-
-  let with_formatter ~f x =
-    let buff = Buffer.create 64 in
-    let fmt = Format.formatter_of_buffer buff in
-    f fmt x;
-    Format.pp_print_flush fmt ();
-    Buffer.contents buff
 end
 
 type error = |
