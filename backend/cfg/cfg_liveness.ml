@@ -5,17 +5,13 @@ type domain =
     across : Reg.Set.t
   }
 
-module Domain : Cfg_dataflow.Backward_domain with type t = domain = struct
+module Domain : Cfg_dataflow.Domain_S with type t = domain = struct
   type t = domain =
     { before : Reg.Set.t;
       across : Reg.Set.t
     }
 
   let bot = { before = Reg.Set.empty; across = Reg.Set.empty }
-
-  let compare { before = left_before; across = _ }
-      { before = right_before; across = _ } =
-    Reg.Set.compare left_before right_before
 
   let join { before = left_before; across = _ }
       { before = right_before; across = _ } =
@@ -31,11 +27,6 @@ module Domain : Cfg_dataflow.Backward_domain with type t = domain = struct
     f fmt x;
     Format.pp_print_flush fmt ();
     Buffer.contents buff
-
-  let to_string { before = regset; across = _ } =
-    regset |> Reg.Set.elements
-    |> ListLabels.map ~f:(with_formatter ~f:Printmach.reg)
-    |> StringLabels.concat ~sep:", "
 end
 
 type error = |
