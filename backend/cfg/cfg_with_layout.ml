@@ -27,24 +27,39 @@
 
 type t =
   { cfg : Cfg.t;
-    mutable layout : Label.t list;
+    mutable layout : int ref Label.Tbl.t;
     mutable new_labels : Label.Set.t;
     preserve_orig_labels : bool
   }
 
+let layout_to_seq layout =
+  let assoc_arr =
+    Label.Tbl.to_seq layout
+    |> Seq.map (fun (label, idx) -> !idx, label)
+    |> Array.of_seq
+  in
+  Array.fast_sort (fun (idx1, _) (idx2, _) -> Int.compare idx1 idx2) assoc_arr;
+  Array.to_seq assoc_arr |> Seq.map (fun (_idx, label) -> label)
+
+let layout_of_list layout =
+  let table = Label.Tbl.create (List.length layout) in
+  List.iteri (fun idx label -> Label.Tbl.add table label (ref idx)) layout;
+  table
+
 let create cfg ~layout ~preserve_orig_labels ~new_labels =
+  let layout = layout_of_list layout in
   { cfg; layout; new_labels; preserve_orig_labels }
 
 let cfg t = t.cfg
 
-let layout t = t.layout
+let layout t = layout_to_seq t.layout |> List.of_seq
 
 let preserve_orig_labels t = t.preserve_orig_labels
 
 let new_labels t = t.new_labels
 
 let set_layout t layout =
-  let cur_layout = Label.Set.of_list t.layout in
+  let cur_layout = layout_to_seq t.layout |> Label.Set.of_seq in
   let new_layout = Label.Set.of_list layout in
   if not
        (Label.Set.equal cur_layout new_layout
@@ -53,11 +68,17 @@ let set_layout t layout =
     Misc.fatal_error
       "Cfg set_layout: new layout is not a permutation of the current layout, \
        or first label is not entry";
-  t.layout <- layout
+  List.iteri (fun idx label -> Label.Tbl.find t.layout label := idx) layout
 
 let remove_block t label =
   Cfg.remove_block_exn t.cfg label;
-  t.layout <- List.filter (fun l -> not (Label.equal l label)) t.layout;
+  let removed_idx = !(Label.Tbl.find t.layout label) in
+  Label.Tbl.remove t.layout label;
+  Label.Tbl.iter
+    (fun _label idx ->
+      assert (removed_idx <> !idx);
+      if !idx > removed_idx then decr idx)
+    t.layout;
   t.new_labels <- Label.Set.remove label t.new_labels
 
 let is_trap_handler t label =
@@ -70,7 +91,7 @@ let dump ppf t ~msg =
   let open Format in
   fprintf ppf "\ncfg for %s\n" msg;
   fprintf ppf "%s\n" t.cfg.fun_name;
-  fprintf ppf "layout.length=%d\n" (List.length t.layout);
+  fprintf ppf "layout.length=%d\n" (Label.Tbl.length t.layout);
   fprintf ppf "blocks.length=%d\n" (Label.Tbl.length t.cfg.blocks);
   let print_block label =
     let block = Label.Tbl.find t.cfg.blocks label in
@@ -87,7 +108,7 @@ let dump ppf t ~msg =
       (Cfg.successor_labels ~normal:false ~exn:true block);
     fprintf ppf "\n"
   in
-  List.iter print_block t.layout
+  Label.Tbl.iter (fun label _idx -> print_block label) t.layout
 
 let print_row r ppf = Format.dprintf "@,@[<v 1><tr>%t@]@,</tr>" r ppf
 
@@ -246,18 +267,17 @@ let print_dot ?(show_instr = true) ?(show_exn = true)
       then print_arrow ppf (name label) "placeholder" ~style:"dashed")
   in
   (* print all the blocks, even if they don't appear in the layout *)
-  List.iteri
-    (fun index label ->
+  Label.Tbl.iter
+    (fun label index ->
       let block = Label.Tbl.find t.cfg.blocks label in
-      print_block_dot label block (Some index))
+      print_block_dot label block (Some !index))
     t.layout;
-  if List.length t.layout < Label.Tbl.length t.cfg.blocks
+  if Label.Tbl.length t.layout < Label.Tbl.length t.cfg.blocks
   then
     Label.Tbl.iter
       (fun label block ->
-        match List.find_opt (fun lbl -> Label.equal label lbl) t.layout with
-        | None -> print_block_dot label block None
-        | _ -> ())
+        if not (Label.Tbl.mem t.layout label)
+        then print_block_dot label block None)
       t.cfg.blocks;
   Format.fprintf ppf "}\n%!";
   ()
