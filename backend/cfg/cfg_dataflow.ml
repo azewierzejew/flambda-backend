@@ -28,9 +28,6 @@ module type Dataflow_direction_S = sig
   (* For backwards this is the predecessors. *)
   val edges_out : Cfg.basic_block -> Label.Set.t
 
-  (* For backwards this is the successors. *)
-  val edges_in : Cfg.basic_block -> Label.Set.t
-
   val transfer_block :
     update_instr:(int -> instr_domain -> unit) ->
     Transfer_domain.t ->
@@ -69,7 +66,7 @@ module Make_dataflow (D : Dataflow_direction_S) :
 
     type element = Label.t
 
-    val create : unit -> t
+    val create : priorities:int Label.Tbl.t -> t
 
     val add : t -> element -> unit
 
@@ -77,22 +74,41 @@ module Make_dataflow (D : Dataflow_direction_S) :
 
     val remove_and_return : t -> element
   end = struct
-    type t = Label.Set.t ref
+    module WorkSetElement = struct
+      type t =
+        { priority : int;
+          label : Label.t
+        }
+
+      let compare t1 t2 =
+        match Int.compare t1.priority t2.priority with
+        | 0 -> Label.compare t1.label t2.label
+        | c -> c
+    end
+
+    module WorkSet = Set.Make (WorkSetElement)
+
+    type t =
+      { priorities : int Label.Tbl.t;
+        mutable work_set : WorkSet.t
+      }
 
     type element = Label.t
 
-    let create () = ref Label.Set.empty
+    let create ~priorities = { priorities; work_set = WorkSet.empty }
 
-    let add t label = t := Label.Set.add label !t
+    let add t label =
+      let priority = Label.Tbl.find t.priorities label in
+      t.work_set <- WorkSet.add { label; priority } t.work_set
 
-    let is_empty t = Label.Set.is_empty !t
+    let is_empty t = WorkSet.is_empty t.work_set
 
-    let choose t = Label.Set.min_elt !t
+    let choose t = WorkSet.max_elt t.work_set
 
     let remove_and_return t =
       let element = choose t in
-      t := Label.Set.remove element !t;
-      element
+      t.work_set <- WorkSet.remove element t.work_set;
+      element.label
   end
 
   type work_state =
@@ -103,6 +119,75 @@ module Make_dataflow (D : Dataflow_direction_S) :
     }
 
   type instr_domain = D.instr_domain
+
+  type priority_helper =
+    { mutable index : int;
+      mutable lowlink : int
+    }
+
+  let compute_priorities (cfg : Cfg.t) =
+    (* This algorithm is based on Tarjan's strongly connected components
+       algorithm explained in "DEPTH-FIRST SEARCH AND LINEAR GRAPH ALGORITHMS*"
+       by Robert Tarjan, chapter 4.
+
+       We assigned priority to the nodes based on order they are popped from
+       stack. With that for two strongly connected components C1 and C2 with and
+       edge from C1 to C2 all nodes from C1 will have higher priority than nodes
+       in C2. That is a good order for computing dataflow on the DAG of strongly
+       connected components.
+
+       For nodes in a single strongly connected component they are added to the
+       stack in pre-order and when popping the order will be reversed. But we
+       order them in descending order in terms of priority so the will be
+       computed in the actual pre-order. That seems to be a good heuristic for
+       strongly connected components because for a simple cycle that is the best
+       ordering. *)
+    let stack = Stack.create () in
+    let mapping = Label.Tbl.create (Label.Tbl.length cfg.blocks) in
+    let priorities = Label.Tbl.create (Label.Tbl.length cfg.blocks) in
+    let is_on_stack v =
+      let stack = Stack.to_seq stack |> List.of_seq in
+      List.mem v stack
+    in
+    let i = ref 0 in
+    let priority = ref 0 in
+    let rec pop_until v =
+      (* CR-soon azewierzejew: Make this computation more efficient. *)
+      let w = Stack.pop stack in
+      incr priority;
+      assert (not (Label.Tbl.mem priorities w));
+      Label.Tbl.add priorities w !priority;
+      if not (Label.equal v w) then pop_until v
+    in
+    let rec strong_connect v =
+      assert (not (Label.Tbl.mem mapping v));
+      incr i;
+      let v_values = { index = !i; lowlink = !i } in
+      Label.Tbl.add mapping v v_values;
+      Stack.push v stack;
+      let block = Cfg.get_block_exn cfg v in
+      Label.Set.iter
+        (fun w ->
+          match Label.Tbl.find_opt mapping w with
+          | None ->
+            strong_connect w;
+            let w_values = Label.Tbl.find mapping w in
+            v_values.lowlink <- min v_values.lowlink w_values.lowlink
+          | Some w_values ->
+            if w_values.index < v_values.index
+            then
+              if is_on_stack w
+              then v_values.lowlink <- min v_values.lowlink w_values.index)
+        (D.edges_out block);
+      if v_values.lowlink = v_values.index then pop_until v
+    in
+    Cfg.iter_blocks cfg ~f:(fun label _block ->
+        if not (Label.Tbl.mem mapping label)
+        then (
+          strong_connect label;
+          assert (Stack.is_empty stack)));
+    assert (Label.Tbl.length priorities = Label.Tbl.length cfg.blocks);
+    priorities
 
   let update_instr : work_state -> int -> instr_domain -> unit =
    fun t instr_id value ->
@@ -116,7 +201,8 @@ module Make_dataflow (D : Dataflow_direction_S) :
       store_instr:bool ->
       work_state =
    fun cfg ~init ~store_instr ->
-    let queue = WorkSet.create () in
+    let priorities = compute_priorities cfg in
+    let queue = WorkSet.create ~priorities in
     let map_block = Label.Tbl.create (Label.Tbl.length cfg.Cfg.blocks) in
     let map_instr =
       if store_instr
@@ -233,9 +319,6 @@ module Forward (D : Domain_S) (T : Forward_transfer with type domain = D.t) :
 
     let edges_out : Cfg.basic_block -> Label.Set.t =
      fun block -> Cfg.successor_labels ~normal:true ~exn:true block
-
-    let edges_in : Cfg.basic_block -> Label.Set.t =
-     fun _block -> failwith "TODO"
 
     let join_result :
         old_value:Transfer_domain.t ->
@@ -373,9 +456,6 @@ module Backward (D : Domain_S) (T : Backward_transfer with type domain = D.t) :
 
     let edges_out : Cfg.basic_block -> Label.Set.t =
      fun block -> Cfg.predecessor_labels block |> Label.Set.of_list
-
-    let edges_in : Cfg.basic_block -> Label.Set.t =
-     fun _block -> failwith "TODO"
 
     let join_result :
         old_value:Transfer_domain.t ->
